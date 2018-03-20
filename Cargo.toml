@@ -1,0 +1,12 @@
+[package]
+name = "protobuf-parser"
+version = "0.1.0"
+description = "A nom-based parser for .proto files"
+authors = ["Johann Tuffe <tafia973@gmail.com>"]
+keywords = ["protobuf", "parser"]
+license = "MIT"
+readme = "README.md" 
+repository = "https://github.com/tafia/protobuf-parser"
+
+[dependencies]
+nom = "3.2.1"
