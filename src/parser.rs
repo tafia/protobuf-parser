@@ -1,7 +1,8 @@
 use std::str;
 use std::path::{Path, PathBuf};
 
-use super::{Enumerator, Field, FieldType, FileDescriptor, Frequency, Message, OneOf, Syntax};
+use super::{EnumVariant, Enumerator, Field, FieldType, FileDescriptor, Frequency, Message, OneOf,
+            Syntax};
 use nom::{digit, hex_digit, multispace};
 
 fn is_word(b: u8) -> bool {
@@ -165,9 +166,6 @@ named!(
             >> (OneOf {
                 name: name,
                 fields: fields,
-                package: "".to_string(),
-                module: "".to_string(),
-                imported: false,
             })
     )
 );
@@ -190,7 +188,6 @@ named!(
                 .iter()
                 .find(|&&(k, _)| k == "packed")
                 .map(|&(_, v)| str::FromStr::from_str(v).expect("Cannot parse Packed value")),
-            boxed: false,
             deprecated: key_vals
                 .iter()
                 .find(|&&(k, _)| k == "deprecated")
@@ -256,10 +253,13 @@ named!(
 );
 
 named!(
-    enum_field<(String, i32)>,
+    enum_variant<EnumVariant>,
     do_parse!(
         name: word >> many0!(br) >> tag!("=") >> many0!(br) >> number: alt!(hex_integer | integer)
-            >> many0!(br) >> tag!(";") >> many0!(br) >> ((name, number))
+            >> many0!(br) >> tag!(";") >> many0!(br) >> (EnumVariant {
+            name: name,
+            number: number,
+        })
     )
 );
 
@@ -267,13 +267,10 @@ named!(
     enumerator<Enumerator>,
     do_parse!(
         tag!("enum") >> many1!(br) >> name: word >> many0!(br) >> tag!("{") >> many0!(br)
-            >> fields: many0!(enum_field) >> many0!(br) >> tag!("}") >> many0!(br)
+            >> variants: many0!(enum_variant) >> many0!(br) >> tag!("}") >> many0!(br)
             >> many0!(tag!(";")) >> (Enumerator {
             name: name,
-            fields: fields,
-            imported: false,
-            package: "".to_string(),
-            module: "".to_string(),
+            variants: variants,
         })
     )
 );
