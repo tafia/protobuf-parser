@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+import "imported.proto";
+
+message FooBar {}

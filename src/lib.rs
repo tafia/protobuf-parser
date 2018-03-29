@@ -1,9 +1,15 @@
 #[macro_use] extern crate nom;
 
 mod parser;
+mod parser_with_dependencies;
 
 use std::path::PathBuf;
 use parser::file_descriptor;
+
+
+pub use parser_with_dependencies::parse_with_dependencies;
+pub use parser_with_dependencies::FileDescriptorWithContext;
+
 
 #[derive(Debug, Clone, Copy)]
 pub enum Syntax {
