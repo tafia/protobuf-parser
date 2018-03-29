@@ -239,8 +239,8 @@ named!(
             for e in events {
                 match e {
                     MessageEvent::Field(f) => msg.fields.push(f),
-                    MessageEvent::ReservedNums(r) => msg.reserved_nums = Some(r),
-                    MessageEvent::ReservedNames(r) => msg.reserved_names = Some(r),
+                    MessageEvent::ReservedNums(r) => msg.reserved_nums = r,
+                    MessageEvent::ReservedNames(r) => msg.reserved_names = r,
                     MessageEvent::Message(m) => msg.messages.push(m),
                     MessageEvent::Enumerator(e) => msg.enums.push(e),
                     MessageEvent::OneOf(o) => msg.oneofs.push(o),

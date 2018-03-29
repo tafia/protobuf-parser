@@ -155,9 +155,9 @@ pub struct Message {
     /// Message `OneOf`s
     pub oneofs: Vec<OneOf>,
     /// Message reserved numbers
-    pub reserved_nums: Option<Vec<i32>>,
+    pub reserved_nums: Vec<i32>,
     /// Message reserved names
-    pub reserved_names: Option<Vec<String>>,
+    pub reserved_names: Vec<String>,
     /// Nested messages
     pub messages: Vec<Message>,
     /// Nested enums
