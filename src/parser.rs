@@ -142,7 +142,7 @@ named!(
             tag!("fixed64") => { |_| FieldType::Fixed64 } |
             tag!("sfixed64") => { |_| FieldType::Sfixed64 } |
             tag!("bool") => { |_| FieldType::Bool } |
-            tag!("string") => { |_| FieldType::String_ } |
+            tag!("string") => { |_| FieldType::String } |
             tag!("bytes") => { |_| FieldType::Bytes } |
             tag!("float") => { |_| FieldType::Float } |
             tag!("double") => { |_| FieldType::Double } |
@@ -437,7 +437,7 @@ mod test {
             assert_eq!(1, mess.fields.len());
             match mess.fields[0].typ {
                 FieldType::Map(ref f) => match &**f {
-                    &(FieldType::String_, FieldType::Int32) => (),
+                    &(FieldType::String, FieldType::Int32) => (),
                     ref f => panic!("Expecting Map<String, Int32> found {:?}", f),
                 },
                 ref f => panic!("Expecting map, got {:?}", f),

@@ -66,14 +66,14 @@ pub enum FieldType {
     ///
     /// # Remarks
     ///
-    /// Uses variable-length encoding. Signed int value. These more efficiently
+    /// Uses ZigZag variable-length encoding. Signed int value. These more efficiently
     /// encode negative numbers than regular int32s.
     Sint32,
     /// Protobuf sint64
     ///
     /// # Remarks
     ///
-    /// Uses variable-length encoding. Signed int value. These more efficiently
+    /// Uses ZigZag variable-length encoding. Signed int value. These more efficiently
     /// encode negative numbers than regular int32s.
     Sint64,
     /// Protobuf bool
@@ -99,7 +99,7 @@ pub enum FieldType {
     /// # Remarks
     ///
     /// A string must always contain UTF-8 encoded or 7-bit ASCII text.
-    String_,
+    String,
     /// Protobuf bytes
     ///
     /// # Remarks
