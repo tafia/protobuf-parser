@@ -4,6 +4,7 @@ extern crate nom;
 mod parser;
 
 use std::path::PathBuf;
+use std::ops::Range;
 use parser::file_descriptor;
 
 /// Protobox syntax
@@ -155,7 +156,7 @@ pub struct Message {
     /// Message `OneOf`s
     pub oneofs: Vec<OneOf>,
     /// Message reserved numbers
-    pub reserved_nums: Vec<i32>,
+    pub reserved_nums: Vec<Range<i32>>,
     /// Message reserved names
     pub reserved_names: Vec<String>,
     /// Nested messages

@@ -1,5 +1,6 @@
 use std::str;
 use std::path::{Path, PathBuf};
+use std::ops::Range;
 
 use super::{EnumVariant, Enumerator, Field, FieldType, FileDescriptor, Rule, Message, OneOf,
             Syntax};
@@ -81,23 +82,23 @@ named!(
 );
 
 named!(
-    num_range<Vec<i32>>,
+    num_range<Range<i32>>,
     do_parse!(
         from_: integer >> many1!(br) >> tag!("to") >> many1!(br) >> to_: integer
-            >> ((from_..(to_ + 1)).collect())
+            >> (from_..(to_ + 1))
     )
 );
 
 named!(
-    reserved_nums<Vec<i32>>,
+    reserved_nums<Vec<Range<i32>>>,
     do_parse!(
         tag!("reserved") >> many1!(br)
             >> nums:
                 separated_list!(
                     do_parse!(many0!(br) >> tag!(",") >> many0!(br) >> (())),
-                    alt!(num_range | integer => { |i| vec![i] })
+                    alt!(num_range | integer => { |i| i..(i + 1) })
                 ) >> many0!(br) >> tag!(";")
-            >> (nums.into_iter().flat_map(|v| v.into_iter()).collect())
+            >> (nums)
     )
 );
 
@@ -201,7 +202,7 @@ enum MessageEvent {
     Message(Message),
     Enumerator(Enumerator),
     Field(Field),
-    ReservedNums(Vec<i32>),
+    ReservedNums(Vec<Range<i32>>),
     ReservedNames(Vec<String>),
     OneOf(OneOf),
     Ignore,
