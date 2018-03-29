@@ -2,8 +2,7 @@ use std::str;
 use std::path::{Path, PathBuf};
 use std::ops::Range;
 
-use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Rule, Message, OneOf,
-            Syntax};
+use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Message, OneOf, Rule, Syntax};
 use nom::{digit, hex_digit, multispace};
 
 fn is_word(b: u8) -> bool {
@@ -97,8 +96,7 @@ named!(
                 separated_list!(
                     do_parse!(many0!(br) >> tag!(",") >> many0!(br) >> (())),
                     alt!(num_range | integer => { |i| i..(i + 1) })
-                ) >> many0!(br) >> tag!(";")
-            >> (nums)
+                ) >> many0!(br) >> tag!(";") >> (nums)
     )
 );
 
@@ -174,8 +172,8 @@ named!(
 named!(
     message_field<Field>,
     do_parse!(
-        rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word
-            >> many0!(br) >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
+        rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word >> many0!(br)
+            >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
             >> key_vals: many0!(key_val) >> tag!(";") >> (Field {
             name: name,
             rule: rule.unwrap_or(Rule::Optional),
