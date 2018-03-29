@@ -1,7 +1,7 @@
 use std::str;
 use std::path::{Path, PathBuf};
 
-use super::{EnumVariant, Enumerator, Field, FieldType, FileDescriptor, Frequency, Message, OneOf,
+use super::{EnumVariant, Enumerator, Field, FieldType, FileDescriptor, Rule, Message, OneOf,
             Syntax};
 use nom::{digit, hex_digit, multispace};
 
@@ -123,10 +123,10 @@ named!(
 );
 
 named!(
-    frequency<Frequency>,
-    alt!(tag!("optional") => { |_| Frequency::Optional } |
-            tag!("repeated") => { |_| Frequency::Repeated } |
-            tag!("required") => { |_| Frequency::Required } )
+    rule<Rule>,
+    alt!(tag!("optional") => { |_| Rule::Optional } |
+            tag!("repeated") => { |_| Rule::Repeated } |
+            tag!("required") => { |_| Rule::Required } )
 );
 
 named!(
@@ -173,11 +173,11 @@ named!(
 named!(
     message_field<Field>,
     do_parse!(
-        frequency: opt!(frequency) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word
+        rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word
             >> many0!(br) >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
             >> key_vals: many0!(key_val) >> tag!(";") >> (Field {
             name: name,
-            frequency: frequency.unwrap_or(Frequency::Optional),
+            rule: rule.unwrap_or(Rule::Optional),
             typ: typ,
             number: number,
             default: key_vals

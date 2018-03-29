@@ -21,9 +21,9 @@ impl Default for Syntax {
     }
 }
 
-/// A field frequency
+/// A field rule
 #[derive(Debug, Clone)]
-pub enum Frequency {
+pub enum Rule {
     /// A well-formed message can have zero or one of this field (but not more than one).
     Optional,
     /// This field can be repeated any number of times (including zero) in a well-formed message.
@@ -131,8 +131,8 @@ pub enum FieldType {
 pub struct Field {
     /// Field name
     pub name: String,
-    /// Field `Frequency`
-    pub frequency: Frequency,
+    /// Field `Rule`
+    pub rule: Rule,
     /// Field type
     pub typ: FieldType,
     /// Tag number
