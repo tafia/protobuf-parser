@@ -2,7 +2,7 @@ use std::str;
 use std::path::{Path, PathBuf};
 use std::ops::Range;
 
-use super::{EnumVariant, Enumerator, Field, FieldType, FileDescriptor, Rule, Message, OneOf,
+use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Rule, Message, OneOf,
             Syntax};
 use nom::{digit, hex_digit, multispace};
 
@@ -200,7 +200,7 @@ named!(
 
 enum MessageEvent {
     Message(Message),
-    Enumerator(Enumerator),
+    Enumeration(Enumeration),
     Field(Field),
     ReservedNums(Vec<Range<i32>>),
     ReservedNames(Vec<String>),
@@ -214,7 +214,7 @@ named!(
                                          reserved_names => { |r| MessageEvent::ReservedNames(r) } |
                                          message_field => { |f| MessageEvent::Field(f) } |
                                          message => { |m| MessageEvent::Message(m) } |
-                                         enumerator => { |e| MessageEvent::Enumerator(e) } |
+                                         enumerator => { |e| MessageEvent::Enumeration(e) } |
                                          one_of => { |o| MessageEvent::OneOf(o) } |
                                          br => { |_| MessageEvent::Ignore })
 );
@@ -243,7 +243,7 @@ named!(
                     MessageEvent::ReservedNums(r) => msg.reserved_nums = r,
                     MessageEvent::ReservedNames(r) => msg.reserved_names = r,
                     MessageEvent::Message(m) => msg.messages.push(m),
-                    MessageEvent::Enumerator(e) => msg.enums.push(e),
+                    MessageEvent::Enumeration(e) => msg.enums.push(e),
                     MessageEvent::OneOf(o) => msg.oneofs.push(o),
                     MessageEvent::Ignore => (),
                 }
@@ -254,10 +254,10 @@ named!(
 );
 
 named!(
-    enum_variant<EnumVariant>,
+    enum_value<EnumValue>,
     do_parse!(
         name: word >> many0!(br) >> tag!("=") >> many0!(br) >> number: alt!(hex_integer | integer)
-            >> many0!(br) >> tag!(";") >> many0!(br) >> (EnumVariant {
+            >> many0!(br) >> tag!(";") >> many0!(br) >> (EnumValue {
             name: name,
             number: number,
         })
@@ -265,13 +265,13 @@ named!(
 );
 
 named!(
-    enumerator<Enumerator>,
+    enumerator<Enumeration>,
     do_parse!(
         tag!("enum") >> many1!(br) >> name: word >> many0!(br) >> tag!("{") >> many0!(br)
-            >> variants: many0!(enum_variant) >> many0!(br) >> tag!("}") >> many0!(br)
-            >> many0!(tag!(";")) >> (Enumerator {
+            >> values: many0!(enum_value) >> many0!(br) >> tag!("}") >> many0!(br)
+            >> many0!(tag!(";")) >> (Enumeration {
             name: name,
-            variants: variants,
+            values: values,
         })
     )
 );
@@ -294,7 +294,7 @@ enum Event {
     Import(PathBuf),
     Package(String),
     Message(Message),
-    Enum(Enumerator),
+    Enum(Enumeration),
     Ignore,
 }
 

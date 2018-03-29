@@ -1,3 +1,8 @@
+//! A nom-based protobuf file parser
+//!
+//! This crate can be seen as a rust transcription of the
+//! [descriptor.proto](https://github.com/google/protobuf/blob/master/src/google/protobuf/descriptor.proto) file
+
 #[macro_use]
 extern crate nom;
 
@@ -162,25 +167,25 @@ pub struct Message {
     /// Nested messages
     pub messages: Vec<Message>,
     /// Nested enums
-    pub enums: Vec<Enumerator>,
+    pub enums: Vec<Enumeration>,
 }
 
-/// A protobuf enumerator field
+/// A protobuf enumeration field
 #[derive(Debug, Clone)]
-pub struct EnumVariant {
-    /// enum variant name
+pub struct EnumValue {
+    /// enum value name
     pub name: String,
-    /// enum variant number
+    /// enum value number
     pub number: i32,
 }
 
 /// A protobuf enumerator
 #[derive(Debug, Clone)]
-pub struct Enumerator {
+pub struct Enumeration {
     /// enum name
     pub name: String,
-    /// enum variants
-    pub variants: Vec<EnumVariant>,
+    /// enum values
+    pub values: Vec<EnumValue>,
 }
 
 /// A OneOf
@@ -204,7 +209,7 @@ pub struct FileDescriptor {
     /// Top level messages
     pub messages: Vec<Message>,
     /// Enums
-    pub enums: Vec<Enumerator>,
+    pub enums: Vec<Enumeration>,
 }
 
 impl FileDescriptor {
