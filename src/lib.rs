@@ -27,7 +27,7 @@ impl Default for Syntax {
 }
 
 /// A field rule
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum Rule {
     /// A well-formed message can have zero or one of this field (but not more than one).
     Optional,
@@ -129,10 +129,12 @@ pub enum FieldType {
     MessageOrEnum(String),
     /// Protobut map
     Map(Box<(FieldType, FieldType)>),
+    /// Protobuf group (deprecated)
+    Group(Vec<Field>),
 }
 
 /// A Protobuf Field
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Field {
     /// Field name
     pub name: String,
