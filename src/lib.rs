@@ -129,6 +129,7 @@ pub enum FieldType {
     Float,
     /// Protobut map
     Map(Box<(FieldType, FieldType)>),
+    /// TODO: Groups (even if deprecated)
 }
 
 /// A Protobuf Field
