@@ -486,4 +486,33 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_default_value_int() {
+        let msg = r#"message Sample {
+            optional int32 x = 1 [default = 17];
+        }"#;
+
+        let mess = message(msg.as_bytes()).unwrap().1;
+        assert_eq!("17", mess.fields[0].default.as_ref().expect("default"));
+    }
+
+    #[test]
+    fn test_default_value_string() {
+        let msg = r#"message Sample {
+            optional string x = 1 [default = "ab\nc d\"g\'h\0\"z"];
+        }"#;
+
+        let mess = message(msg.as_bytes()).unwrap().1;
+        assert_eq!(r#""ab\nc d\"g\'h\0\"z""#, mess.fields[0].default.as_ref().expect("default"));
+    }
+
+    #[test]
+    fn test_default_value_bytes() {
+        let msg = r#"message Sample {
+            optional bytes x = 1 [default = "ab\nc d\xfeE\"g\'h\0\"z"];
+        }"#;
+
+        let mess = message(msg.as_bytes()).unwrap().1;
+        assert_eq!(r#""ab\nc d\xfeE\"g\'h\0\"z""#, mess.fields[0].default.as_ref().expect("default"));
+    }
 }
