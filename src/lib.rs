@@ -8,7 +8,6 @@ extern crate nom;
 
 mod parser;
 
-use std::path::PathBuf;
 use std::ops::Range;
 use parser::file_descriptor;
 
@@ -161,6 +160,8 @@ pub struct Message {
     /// Message `OneOf`s
     pub oneofs: Vec<OneOf>,
     /// Message reserved numbers
+    ///
+    /// TODO: use RangeInclusive once stable
     pub reserved_nums: Vec<Range<i32>>,
     /// Message reserved names
     pub reserved_names: Vec<String>,
@@ -201,7 +202,7 @@ pub struct OneOf {
 #[derive(Debug, Default, Clone)]
 pub struct FileDescriptor {
     /// Imports
-    pub import_paths: Vec<PathBuf>,
+    pub import_paths: Vec<String>,
     /// Package
     pub package: String,
     /// Protobuf Syntax

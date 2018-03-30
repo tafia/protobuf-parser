@@ -1,5 +1,4 @@
 use std::str;
-use std::path::{Path, PathBuf};
 use std::ops::Range;
 
 use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Message, OneOf, Rule, Syntax};
@@ -64,12 +63,11 @@ named!(
 );
 
 named!(
-    import<PathBuf>,
+    import<String>,
     do_parse!(
         tag!("import") >> many1!(br) >> tag!("\"")
-            >> path: map!(map_res!(take_until!("\""), str::from_utf8), |s| {
-                Path::new(s).into()
-            }) >> tag!("\"") >> many0!(br) >> tag!(";") >> (path)
+            >> path: map_res!(take_until!("\""), |b: &[u8]| String::from_utf8(b.to_vec()))
+            >> tag!("\"") >> many0!(br) >> tag!(";") >> (path)
     )
 );
 
@@ -84,7 +82,7 @@ named!(
     num_range<Range<i32>>,
     do_parse!(
         from_: integer >> many1!(br) >> tag!("to") >> many1!(br) >> to_: integer
-            >> (from_..(to_ + 1))
+            >> (from_..to_.saturating_add(1))
     )
 );
 
@@ -95,7 +93,7 @@ named!(
             >> nums:
                 separated_list!(
                     do_parse!(many0!(br) >> tag!(",") >> many0!(br) >> (())),
-                    alt!(num_range | integer => { |i| i..(i + 1) })
+                    alt!(num_range | integer => { |i: i32| i..i.saturating_add(1) })
                 ) >> many0!(br) >> tag!(";") >> (nums)
     )
 );
@@ -289,7 +287,7 @@ named!(
 
 enum Event {
     Syntax(Syntax),
-    Import(PathBuf),
+    Import(String),
     Package(String),
     Message(Message),
     Enum(Enumeration),
