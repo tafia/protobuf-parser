@@ -144,7 +144,7 @@ named!(
             tag!("float") => { |_| FieldType::Float } |
             tag!("double") => { |_| FieldType::Double } |
             map_field => { |(k, v)| FieldType::Map(Box::new((k, v))) } |
-            word => { |w| FieldType::Message(w) })
+            word => { |w| FieldType::MessageOrEnum(w) })
 );
 
 named!(

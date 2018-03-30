@@ -39,6 +39,8 @@ pub enum Rule {
 }
 
 /// Protobuf supported field types
+///
+/// TODO: Groups (even if deprecated)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldType {
     /// Protobuf int32
@@ -83,8 +85,6 @@ pub enum FieldType {
     Sint64,
     /// Protobuf bool
     Bool,
-    /// Protobuf enum (holds the enum name)
-    Enum(String),
     /// Protobuf fixed64
     ///
     /// # Remarks
@@ -111,8 +111,6 @@ pub enum FieldType {
     ///
     /// May contain any arbitrary sequence of bytes.
     Bytes,
-    /// Protobut message (holds the message name)
-    Message(String),
     /// Protobut fixed32
     ///
     /// # Remarks
@@ -127,9 +125,10 @@ pub enum FieldType {
     Sfixed32,
     /// Protobut float
     Float,
+    /// Protobuf message or enum (holds the name)
+    MessageOrEnum(String),
     /// Protobut map
     Map(Box<(FieldType, FieldType)>),
-    /// TODO: Groups (even if deprecated)
 }
 
 /// A Protobuf Field
