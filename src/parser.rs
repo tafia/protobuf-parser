@@ -357,9 +357,9 @@ mod test {
                 CANCELED          = 3;
     }"#;
 
-        let mess = enumerator(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(4, mess.fields.len());
+        let enumeration = enumerator(msg.as_bytes());
+        if let ::nom::IResult::Done(_, mess) = enumeration {
+            assert_eq!(4, mess.values.len());
         }
     }
 
@@ -386,7 +386,7 @@ mod test {
     "#;
         let desc = file_descriptor(msg.as_bytes()).to_full_result().unwrap();
         assert_eq!(
-            vec![Path::new("test_import_nested_imported_pb.proto")],
+            vec!["test_import_nested_imported_pb.proto"],
             desc.import_paths
         );
     }
@@ -475,9 +475,9 @@ mod test {
 
         let mess = message(msg.as_bytes());
         if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(Some(vec![4, 15, 17, 18, 19, 20, 30]), mess.reserved_nums);
+            assert_eq!(vec![4..5, 15..16, 17..21, 30..31], mess.reserved_nums);
             assert_eq!(
-                Some(vec!["foo".to_string(), "bar".to_string()]),
+                vec!["foo".to_string(), "bar".to_string()],
                 mess.reserved_names
             );
             assert_eq!(2, mess.fields.len());
