@@ -27,7 +27,7 @@ impl Default for Syntax {
 }
 
 /// A field rule
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Rule {
     /// A well-formed message can have zero or one of this field (but not more than one).
     Optional,
