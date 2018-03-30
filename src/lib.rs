@@ -17,7 +17,7 @@ impl Default for Syntax {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Frequency {
     Optional,
     Repeated,
