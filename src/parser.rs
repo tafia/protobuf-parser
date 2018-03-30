@@ -1,7 +1,7 @@
 use std::str;
-use std::path::{Path, PathBuf};
+use std::ops::Range;
 
-use super::{Enumerator, Field, FieldType, FileDescriptor, Frequency, Message, OneOf, Syntax};
+use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Message, OneOf, Rule, Syntax};
 use nom::{digit, hex_digit, multispace};
 
 fn is_word(b: u8) -> bool {
@@ -63,12 +63,11 @@ named!(
 );
 
 named!(
-    import<PathBuf>,
+    import<String>,
     do_parse!(
         tag!("import") >> many1!(br) >> tag!("\"")
-            >> path: map!(map_res!(take_until!("\""), str::from_utf8), |s| {
-                Path::new(s).into()
-            }) >> tag!("\"") >> many0!(br) >> tag!(";") >> (path)
+            >> path: map_res!(take_until!("\""), |b: &[u8]| String::from_utf8(b.to_vec()))
+            >> tag!("\"") >> many0!(br) >> tag!(";") >> (path)
     )
 );
 
@@ -80,23 +79,22 @@ named!(
 );
 
 named!(
-    num_range<Vec<i32>>,
+    num_range<Range<i32>>,
     do_parse!(
         from_: integer >> many1!(br) >> tag!("to") >> many1!(br) >> to_: integer
-            >> ((from_..(to_ + 1)).collect())
+            >> (from_..to_.saturating_add(1))
     )
 );
 
 named!(
-    reserved_nums<Vec<i32>>,
+    reserved_nums<Vec<Range<i32>>>,
     do_parse!(
         tag!("reserved") >> many1!(br)
             >> nums:
                 separated_list!(
                     do_parse!(many0!(br) >> tag!(",") >> many0!(br) >> (())),
-                    alt!(num_range | integer => { |i| vec![i] })
-                ) >> many0!(br) >> tag!(";")
-            >> (nums.into_iter().flat_map(|v| v.into_iter()).collect())
+                    alt!(num_range | integer => { |i: i32| i..i.saturating_add(1) })
+                ) >> many0!(br) >> tag!(";") >> (nums)
     )
 );
 
@@ -122,10 +120,10 @@ named!(
 );
 
 named!(
-    frequency<Frequency>,
-    alt!(tag!("optional") => { |_| Frequency::Optional } |
-            tag!("repeated") => { |_| Frequency::Repeated } |
-            tag!("required") => { |_| Frequency::Required } )
+    rule<Rule>,
+    alt!(tag!("optional") => { |_| Rule::Optional } |
+            tag!("repeated") => { |_| Rule::Repeated } |
+            tag!("required") => { |_| Rule::Required } )
 );
 
 named!(
@@ -141,7 +139,7 @@ named!(
             tag!("fixed64") => { |_| FieldType::Fixed64 } |
             tag!("sfixed64") => { |_| FieldType::Sfixed64 } |
             tag!("bool") => { |_| FieldType::Bool } |
-            tag!("string") => { |_| FieldType::String_ } |
+            tag!("string") => { |_| FieldType::String } |
             tag!("bytes") => { |_| FieldType::Bytes } |
             tag!("float") => { |_| FieldType::Float } |
             tag!("double") => { |_| FieldType::Double } |
@@ -165,9 +163,6 @@ named!(
             >> (OneOf {
                 name: name,
                 fields: fields,
-                package: "".to_string(),
-                module: "".to_string(),
-                imported: false,
             })
     )
 );
@@ -175,11 +170,11 @@ named!(
 named!(
     message_field<Field>,
     do_parse!(
-        frequency: opt!(frequency) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word
-            >> many0!(br) >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
+        rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word >> many0!(br)
+            >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
             >> key_vals: many0!(key_val) >> tag!(";") >> (Field {
             name: name,
-            frequency: frequency.unwrap_or(Frequency::Optional),
+            rule: rule.unwrap_or(Rule::Optional),
             typ: typ,
             number: number,
             default: key_vals
@@ -190,7 +185,6 @@ named!(
                 .iter()
                 .find(|&&(k, _)| k == "packed")
                 .map(|&(_, v)| str::FromStr::from_str(v).expect("Cannot parse Packed value")),
-            boxed: false,
             deprecated: key_vals
                 .iter()
                 .find(|&&(k, _)| k == "deprecated")
@@ -202,9 +196,9 @@ named!(
 
 enum MessageEvent {
     Message(Message),
-    Enumerator(Enumerator),
+    Enumeration(Enumeration),
     Field(Field),
-    ReservedNums(Vec<i32>),
+    ReservedNums(Vec<Range<i32>>),
     ReservedNames(Vec<String>),
     OneOf(OneOf),
     Ignore,
@@ -216,7 +210,7 @@ named!(
                                          reserved_names => { |r| MessageEvent::ReservedNames(r) } |
                                          message_field => { |f| MessageEvent::Field(f) } |
                                          message => { |m| MessageEvent::Message(m) } |
-                                         enumerator => { |e| MessageEvent::Enumerator(e) } |
+                                         enumerator => { |e| MessageEvent::Enumeration(e) } |
                                          one_of => { |o| MessageEvent::OneOf(o) } |
                                          br => { |_| MessageEvent::Ignore })
 );
@@ -242,10 +236,10 @@ named!(
             for e in events {
                 match e {
                     MessageEvent::Field(f) => msg.fields.push(f),
-                    MessageEvent::ReservedNums(r) => msg.reserved_nums = Some(r),
-                    MessageEvent::ReservedNames(r) => msg.reserved_names = Some(r),
+                    MessageEvent::ReservedNums(r) => msg.reserved_nums = r,
+                    MessageEvent::ReservedNames(r) => msg.reserved_names = r,
                     MessageEvent::Message(m) => msg.messages.push(m),
-                    MessageEvent::Enumerator(e) => msg.enums.push(e),
+                    MessageEvent::Enumeration(e) => msg.enums.push(e),
                     MessageEvent::OneOf(o) => msg.oneofs.push(o),
                     MessageEvent::Ignore => (),
                 }
@@ -256,24 +250,24 @@ named!(
 );
 
 named!(
-    enum_field<(String, i32)>,
+    enum_value<EnumValue>,
     do_parse!(
         name: word >> many0!(br) >> tag!("=") >> many0!(br) >> number: alt!(hex_integer | integer)
-            >> many0!(br) >> tag!(";") >> many0!(br) >> ((name, number))
+            >> many0!(br) >> tag!(";") >> many0!(br) >> (EnumValue {
+            name: name,
+            number: number,
+        })
     )
 );
 
 named!(
-    enumerator<Enumerator>,
+    enumerator<Enumeration>,
     do_parse!(
         tag!("enum") >> many1!(br) >> name: word >> many0!(br) >> tag!("{") >> many0!(br)
-            >> fields: many0!(enum_field) >> many0!(br) >> tag!("}") >> many0!(br)
-            >> many0!(tag!(";")) >> (Enumerator {
+            >> values: many0!(enum_value) >> many0!(br) >> tag!("}") >> many0!(br)
+            >> many0!(tag!(";")) >> (Enumeration {
             name: name,
-            fields: fields,
-            imported: false,
-            package: "".to_string(),
-            module: "".to_string(),
+            values: values,
         })
     )
 );
@@ -293,10 +287,10 @@ named!(
 
 enum Event {
     Syntax(Syntax),
-    Import(PathBuf),
+    Import(String),
     Package(String),
     Message(Message),
-    Enum(Enumerator),
+    Enum(Enumeration),
     Ignore,
 }
 
@@ -440,7 +434,7 @@ mod test {
             assert_eq!(1, mess.fields.len());
             match mess.fields[0].typ {
                 FieldType::Map(ref f) => match &**f {
-                    &(FieldType::String_, FieldType::Int32) => (),
+                    &(FieldType::String, FieldType::Int32) => (),
                     ref f => panic!("Expecting Map<String, Int32> found {:?}", f),
                 },
                 ref f => panic!("Expecting map, got {:?}", f),
