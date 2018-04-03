@@ -143,6 +143,7 @@ named!(
             tag!("bytes") => { |_| FieldType::Bytes } |
             tag!("float") => { |_| FieldType::Float } |
             tag!("double") => { |_| FieldType::Double } |
+            tag!("group") => { |_| FieldType::Group(Vec::new()) } |
             map_field => { |(k, v)| FieldType::Map(Box::new((k, v))) } |
             word => { |w| FieldType::MessageOrEnum(w) })
 );
@@ -156,10 +157,19 @@ named!(
 );
 
 named!(
+    fields_in_braces<Vec<Field>>,
+    do_parse!(
+        tag!("{") >> many0!(br)
+        >> fields: separated_list!(br, message_field)
+        >> many0!(br) >> tag!("}") >> (fields)
+    )
+);
+
+named!(
     one_of<OneOf>,
     do_parse!(
-        tag!("oneof") >> many1!(br) >> name: word >> many0!(br) >> tag!("{")
-            >> fields: many1!(message_field) >> many0!(br) >> tag!("}") >> many0!(br)
+        tag!("oneof") >> many1!(br) >> name: word >> many0!(br)
+            >> fields: fields_in_braces >> many0!(br)
             >> (OneOf {
                 name: name,
                 fields: fields,
@@ -168,29 +178,47 @@ named!(
 );
 
 named!(
+    group_fields_or_semicolon<Option<Vec<Field>>>,
+    alt!(
+        tag!(";") => { |_| None } |
+        fields_in_braces => { Some })
+);
+
+named!(
     message_field<Field>,
     do_parse!(
         rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word >> many0!(br)
             >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
-            >> key_vals: many0!(key_val) >> tag!(";") >> (Field {
-            name: name,
-            rule: rule.unwrap_or(Rule::Optional),
-            typ: typ,
-            number: number,
-            default: key_vals
-                .iter()
-                .find(|&&(k, _)| k == "default")
-                .map(|&(_, v)| v.to_string()),
-            packed: key_vals
-                .iter()
-                .find(|&&(k, _)| k == "packed")
-                .map(|&(_, v)| str::FromStr::from_str(v).expect("Cannot parse Packed value")),
-            deprecated: key_vals
-                .iter()
-                .find(|&&(k, _)| k == "deprecated")
-                .map_or(false, |&(_, v)| str::FromStr::from_str(v)
-                    .expect("Cannot parse Deprecated value")),
-        })
+            >> key_vals: many0!(key_val) >> many0!(br)
+            >> group_fields: group_fields_or_semicolon >> ({
+
+                let typ = match (typ, group_fields) {
+                    (FieldType::Group(..), Some(group_fields)) => {
+                        FieldType::Group(group_fields)
+                    }
+                    // TODO: produce error if semicolon is after group or group is without fields
+                    (typ, _) => typ
+                };
+
+                Field {
+                    name: name,
+                    rule: rule.unwrap_or(Rule::Optional),
+                    typ: typ,
+                    number: number,
+                    default: key_vals
+                        .iter()
+                        .find(|&&(k, _)| k == "default")
+                        .map(|&(_, v)| v.to_string()),
+                    packed: key_vals
+                        .iter()
+                        .find(|&&(k, _)| k == "packed")
+                        .map(|&(_, v)| str::FromStr::from_str(v).expect("Cannot parse Packed value")),
+                    deprecated: key_vals
+                        .iter()
+                        .find(|&&(k, _)| k == "deprecated")
+                        .map_or(false, |&(_, v)| str::FromStr::from_str(v)
+                            .expect("Cannot parse Deprecated value")),
+                }})
     )
 );
 
@@ -514,5 +542,29 @@ mod test {
 
         let mess = message(msg.as_bytes()).unwrap().1;
         assert_eq!(r#""ab\nc d\xfeE\"g\'h\0\"z""#, mess.fields[0].default.as_ref().expect("default"));
+    }
+
+    #[test]
+    fn test_group() {
+        let msg = r#"message MessageWithGroup {
+            optional string aaa = 1;
+
+            repeated group Identifier = 18 {
+                optional int32 iii = 19;
+                optional string sss = 20;
+            }
+
+            required int bbb = 3;
+        }"#;
+        let mess = message(msg.as_bytes()).unwrap().1;
+
+        assert_eq!("Identifier", mess.fields[1].name);
+        if let FieldType::Group(ref group_fields) = mess.fields[1].typ {
+            assert_eq!(2, group_fields.len());
+        } else {
+            panic!("expecting group");
+        }
+
+        assert_eq!("bbb", mess.fields[2].name);
     }
 }
