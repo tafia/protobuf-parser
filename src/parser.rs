@@ -567,4 +567,15 @@ mod test {
 
         assert_eq!("bbb", mess.fields[2].name);
     }
+
+    #[test]
+    fn test_incorrect_file_descriptor() {
+        let msg = r#"
+            message Foo {}
+
+            dfgdg
+        "#;
+
+        assert!(FileDescriptor::parse(msg.as_bytes()).is_err());
+    }
 }

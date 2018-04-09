@@ -218,6 +218,17 @@ pub struct FileDescriptor {
 impl FileDescriptor {
     /// Parses a .proto file content into a `FileDescriptor`
     pub fn parse<S: AsRef<[u8]>>(file: S) -> Result<Self, ::nom::IError> {
-        file_descriptor(file.as_ref()).to_full_result()
+        let file = file.as_ref();
+        match file_descriptor(file) {
+            ::nom::IResult::Done(unparsed, r) => {
+                if !unparsed.is_empty() {
+                    // TODO: make error detection part of parser and report position
+                    Err(::nom::IError::Error(::nom::ErrorKind::NoneOf))
+                } else {
+                    Ok(r)
+                }
+            }
+            o => o.to_full_result(),
+        }
     }
 }
