@@ -1,7 +1,8 @@
 use std::str;
 use std::ops::Range;
 
-use super::{EnumValue, Enumeration, Field, FieldType, FileDescriptor, Message, OneOf, Rule, Syntax};
+use super::{EnumValue, Enumeration, Extension, Field, FieldType, FileDescriptor, Message, OneOf,
+    Rule, Syntax};
 use nom::{digit, hex_digit, multispace};
 
 fn is_word(b: u8) -> bool {
@@ -278,6 +279,19 @@ named!(
 );
 
 named!(
+    extensions<Vec<Extension>>,
+    do_parse!(
+        tag!("extend") >> many1!(br) >> extendee: word >> many0!(br) >>
+            fields: fields_in_braces >> (
+                fields.into_iter().map(|field| Extension {
+                    extendee: extendee.clone(),
+                    field
+                }).collect()
+            )
+    )
+);
+
+named!(
     enum_value<EnumValue>,
     do_parse!(
         name: word >> many0!(br) >> tag!("=") >> many0!(br) >> number: alt!(hex_integer | integer)
@@ -319,6 +333,7 @@ enum Event {
     Package(String),
     Message(Message),
     Enum(Enumeration),
+    Extensions(Vec<Extension>),
     Ignore,
 }
 
@@ -329,6 +344,7 @@ named!(
             package => { |p| Event::Package(p) } |
             message => { |m| Event::Message(m) } |
             enumerator => { |e| Event::Enum(e) } |
+            extensions => { |e| Event::Extensions(e) } |
             option_ignore => { |_| Event::Ignore } |
             service_ignore => { |_| Event::Ignore } |
             br => { |_| Event::Ignore })
@@ -344,6 +360,7 @@ named!(pub file_descriptor<FileDescriptor>,
                    Event::Package(p) => desc.package = p,
                    Event::Message(m) => desc.messages.push(m),
                    Event::Enum(e) => desc.enums.push(e),
+                   Event::Extensions(e) => desc.extensions.extend(e),
                    Event::Ignore => (),
                }
            }
@@ -577,5 +594,28 @@ mod test {
         "#;
 
         assert!(FileDescriptor::parse(msg.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn test_extend() {
+        let proto = r#"
+            syntax = "proto2";
+
+            extend google.protobuf.FileOptions {
+                optional bool foo = 17001;
+                optional string bar = 17002;
+            }
+
+            extend google.protobuf.MessageOptions {
+                optional bool baz = 17003;
+            }
+        "#;
+
+        let fd = FileDescriptor::parse(proto.as_bytes()).expect("fd");
+        assert_eq!(3, fd.extensions.len());
+        assert_eq!("google.protobuf.FileOptions", fd.extensions[0].extendee);
+        assert_eq!("google.protobuf.FileOptions", fd.extensions[1].extendee);
+        assert_eq!("google.protobuf.MessageOptions", fd.extensions[2].extendee);
+        assert_eq!(17003, fd.extensions[2].field.number);
     }
 }

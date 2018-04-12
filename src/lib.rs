@@ -200,6 +200,14 @@ pub struct OneOf {
     pub fields: Vec<Field>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Extension {
+    /// Extend this type with field
+    pub extendee: String,
+    /// Extension field
+    pub field: Field,
+}
+
 /// A File descriptor representing a whole .proto file
 #[derive(Debug, Default, Clone)]
 pub struct FileDescriptor {
@@ -213,6 +221,8 @@ pub struct FileDescriptor {
     pub messages: Vec<Message>,
     /// Enums
     pub enums: Vec<Enumeration>,
+    /// Extensions
+    pub extensions: Vec<Extension>,
 }
 
 impl FileDescriptor {
