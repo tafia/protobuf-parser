@@ -1,6 +1,6 @@
 [package]
 name = "protobuf-parser"
-version = "0.1.2"
+version = "0.1.3"
 description = "A nom-based parser for .proto files"
 authors = ["Johann Tuffe <tafia973@gmail.com>"]
 keywords = ["protobuf", "parser"]
