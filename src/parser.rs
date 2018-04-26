@@ -1,375 +1,1638 @@
 use std::str;
-use std::ops::Range;
+use std::fmt;
+use std::num::ParseIntError;
 
-use super::{EnumValue, Enumeration, Extension, Field, FieldType, FileDescriptor, Message, OneOf,
-    Rule, Syntax};
-use nom::{digit, hex_digit, multispace};
+use super::{EnumValue, Enumeration, Extension, FieldNumberRange, Field, FieldType, FileDescriptor,
+    Message, OneOf, Rule, Syntax};
 
-fn is_word(b: u8) -> bool {
-    match b {
-        b'a'...b'z' | b'A'...b'Z' | b'0'...b'9' | b'_' | b'.' => true,
-        _ => false,
+
+const FIRST_LINE: u32 = 1;
+const FIRST_COL: u32 = 1;
+
+
+/// Location in file
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Loc {
+    /// 1-based
+    pub line: u32,
+    /// 1-based
+    pub col: u32,
+}
+
+impl fmt::Display for Loc {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.col)
     }
 }
 
-named!(
-    word<String>,
-    map_res!(take_while!(is_word), |b: &[u8]| String::from_utf8(
-        b.to_vec()
-    ))
-);
-named!(
-    word_ref<&str>,
-    map_res!(take_while!(is_word), str::from_utf8)
-);
-
-named!(
-    hex_integer<i32>,
-    do_parse!(
-        tag!("0x") >> num: map_res!(map_res!(hex_digit, str::from_utf8), |s| {
-            i32::from_str_radix(s, 16)
-        }) >> (num)
-    )
-);
-
-named!(
-    integer<i32>,
-    map_res!(map_res!(digit, str::from_utf8), str::FromStr::from_str)
-);
-
-named!(
-    comment<()>,
-    do_parse!(tag!("//") >> take_until_and_consume!("\n") >> ())
-);
-named!(
-    block_comment<()>,
-    do_parse!(tag!("/*") >> take_until_and_consume!("*/") >> ())
-);
-
-/// word break: multispace or comment
-named!(
-    br<()>,
-    alt!(map!(multispace, |_| ()) | comment | block_comment)
-);
-
-named!(
-    syntax<Syntax>,
-    do_parse!(
-        tag!("syntax") >> many0!(br) >> tag!("=") >> many0!(br)
-            >> proto:
-                alt!(tag!("\"proto2\"") => { |_| Syntax::Proto2 } |
-                             tag!("\"proto3\"") => { |_| Syntax::Proto3 }) >> many0!(br)
-            >> tag!(";") >> (proto)
-    )
-);
-
-named!(
-    import<String>,
-    do_parse!(
-        tag!("import") >> many1!(br) >> tag!("\"")
-            >> path: map_res!(take_until!("\""), |b: &[u8]| String::from_utf8(b.to_vec()))
-            >> tag!("\"") >> many0!(br) >> tag!(";") >> (path)
-    )
-);
-
-named!(
-    package<String>,
-    do_parse!(
-        tag!("package") >> many1!(br) >> package: word >> many0!(br) >> tag!(";") >> (package)
-    )
-);
-
-named!(
-    num_range<Range<i32>>,
-    do_parse!(
-        from_: integer >> many1!(br) >> tag!("to") >> many1!(br) >> to_: integer
-            >> (from_..to_.saturating_add(1))
-    )
-);
-
-named!(
-    reserved_nums<Vec<Range<i32>>>,
-    do_parse!(
-        tag!("reserved") >> many1!(br)
-            >> nums:
-                separated_list!(
-                    do_parse!(many0!(br) >> tag!(",") >> many0!(br) >> (())),
-                    alt!(num_range | integer => { |i: i32| i..i.saturating_add(1) })
-                ) >> many0!(br) >> tag!(";") >> (nums)
-    )
-);
-
-named!(
-    reserved_names<Vec<String>>,
-    do_parse!(
-        tag!("reserved") >> many1!(br)
-            >> names:
-                many1!(do_parse!(
-                    tag!("\"") >> name: word >> tag!("\"")
-                        >> many0!(alt!(br | tag!(",") => { |_| () })) >> (name)
-                )) >> many0!(br) >> tag!(";") >> (names)
-    )
-);
-
-named!(
-    key_val<(&str, &str)>,
-    do_parse!(
-        tag!("[") >> many0!(br) >> key: word_ref >> many0!(br) >> tag!("=") >> many0!(br)
-            >> value: map_res!(is_not!("]"), str::from_utf8) >> tag!("]") >> many0!(br)
-            >> ((key, value.trim()))
-    )
-);
-
-named!(
-    rule<Rule>,
-    alt!(tag!("optional") => { |_| Rule::Optional } |
-            tag!("repeated") => { |_| Rule::Repeated } |
-            tag!("required") => { |_| Rule::Required } )
-);
-
-named!(
-    field_type<FieldType>,
-    alt!(tag!("int32") => { |_| FieldType::Int32 } |
-            tag!("int64") => { |_| FieldType::Int64 } |
-            tag!("uint32") => { |_| FieldType::Uint32 } |
-            tag!("uint64") => { |_| FieldType::Uint64 } |
-            tag!("sint32") => { |_| FieldType::Sint32 } |
-            tag!("sint64") => { |_| FieldType::Sint64 } |
-            tag!("fixed32") => { |_| FieldType::Fixed32 } |
-            tag!("sfixed32") => { |_| FieldType::Sfixed32 } |
-            tag!("fixed64") => { |_| FieldType::Fixed64 } |
-            tag!("sfixed64") => { |_| FieldType::Sfixed64 } |
-            tag!("bool") => { |_| FieldType::Bool } |
-            tag!("string") => { |_| FieldType::String } |
-            tag!("bytes") => { |_| FieldType::Bytes } |
-            tag!("float") => { |_| FieldType::Float } |
-            tag!("double") => { |_| FieldType::Double } |
-            tag!("group") => { |_| FieldType::Group(Vec::new()) } |
-            map_field => { |(k, v)| FieldType::Map(Box::new((k, v))) } |
-            word => { |w| FieldType::MessageOrEnum(w) })
-);
-
-named!(
-    map_field<(FieldType, FieldType)>,
-    do_parse!(
-        tag!("map") >> many0!(br) >> tag!("<") >> many0!(br) >> key: field_type >> many0!(br)
-            >> tag!(",") >> many0!(br) >> value: field_type >> tag!(">") >> ((key, value))
-    )
-);
-
-named!(
-    fields_in_braces<Vec<Field>>,
-    do_parse!(
-        tag!("{") >> many0!(br)
-        >> fields: separated_list!(br, message_field)
-        >> many0!(br) >> tag!("}") >> (fields)
-    )
-);
-
-named!(
-    one_of<OneOf>,
-    do_parse!(
-        tag!("oneof") >> many1!(br) >> name: word >> many0!(br)
-            >> fields: fields_in_braces >> many0!(br)
-            >> (OneOf {
-                name: name,
-                fields: fields,
-            })
-    )
-);
-
-named!(
-    group_fields_or_semicolon<Option<Vec<Field>>>,
-    alt!(
-        tag!(";") => { |_| None } |
-        fields_in_braces => { Some })
-);
-
-named!(
-    message_field<Field>,
-    do_parse!(
-        rule: opt!(rule) >> many0!(br) >> typ: field_type >> many1!(br) >> name: word >> many0!(br)
-            >> tag!("=") >> many0!(br) >> number: integer >> many0!(br)
-            >> key_vals: many0!(key_val) >> many0!(br)
-            >> group_fields: group_fields_or_semicolon >> ({
-
-                let typ = match (typ, group_fields) {
-                    (FieldType::Group(..), Some(group_fields)) => {
-                        FieldType::Group(group_fields)
-                    }
-                    // TODO: produce error if semicolon is after group or group is without fields
-                    (typ, _) => typ
-                };
-
-                Field {
-                    name: name,
-                    rule: rule.unwrap_or(Rule::Optional),
-                    typ: typ,
-                    number: number,
-                    default: key_vals
-                        .iter()
-                        .find(|&&(k, _)| k == "default")
-                        .map(|&(_, v)| v.to_string()),
-                    packed: key_vals
-                        .iter()
-                        .find(|&&(k, _)| k == "packed")
-                        .map(|&(_, v)| str::FromStr::from_str(v).expect("Cannot parse Packed value")),
-                    deprecated: key_vals
-                        .iter()
-                        .find(|&&(k, _)| k == "deprecated")
-                        .map_or(false, |&(_, v)| str::FromStr::from_str(v)
-                            .expect("Cannot parse Deprecated value")),
-                }})
-    )
-);
-
-enum MessageEvent {
-    Message(Message),
-    Enumeration(Enumeration),
-    Field(Field),
-    ReservedNums(Vec<Range<i32>>),
-    ReservedNames(Vec<String>),
-    OneOf(OneOf),
-    Ignore,
+impl Loc {
+    fn start() -> Loc {
+        Loc {
+            line: FIRST_LINE,
+            col: FIRST_COL,
+        }
+    }
 }
 
-named!(
-    message_event<MessageEvent>,
-    alt!(reserved_nums => { |r| MessageEvent::ReservedNums(r) } |
-                                         reserved_names => { |r| MessageEvent::ReservedNames(r) } |
-                                         message_field => { |f| MessageEvent::Field(f) } |
-                                         message => { |m| MessageEvent::Message(m) } |
-                                         enumerator => { |e| MessageEvent::Enumeration(e) } |
-                                         one_of => { |o| MessageEvent::OneOf(o) } |
-                                         br => { |_| MessageEvent::Ignore })
-);
 
-named!(
-    message_events<(String, Vec<MessageEvent>)>,
-    do_parse!(
-        tag!("message") >> many1!(br) >> name: word >> many0!(br) >> tag!("{") >> many0!(br)
-            >> events: many0!(message_event) >> many0!(br) >> tag!("}") >> many0!(br)
-            >> many0!(tag!(";")) >> ((name, events))
-    )
-);
+/// Basic information about parsing error.
+#[derive(Debug)]
+pub enum ParserError {
+    IncorrectInput,
+    NotUtf8,
+    ExpectChar(char),
+    ExpectConstant,
+    ExpectIdent,
+    UnknownSyntax,
+    UnexpectedEof,
+    ParseIntError,
+    IntegerOverflow,
+    LabelNotAllowed,
+    LabelRequired,
+    InternalError,
+    NotImplemented, // TODO
+}
 
-named!(
-    message<Message>,
-    map!(
-        message_events,
-        |(name, events): (String, Vec<MessageEvent>)| {
-            let mut msg = Message {
-                name: name.clone(),
-                ..Message::default()
-            };
-            for e in events {
-                match e {
-                    MessageEvent::Field(f) => msg.fields.push(f),
-                    MessageEvent::ReservedNums(r) => msg.reserved_nums = r,
-                    MessageEvent::ReservedNames(r) => msg.reserved_names = r,
-                    MessageEvent::Message(m) => msg.messages.push(m),
-                    MessageEvent::Enumeration(e) => msg.enums.push(e),
-                    MessageEvent::OneOf(o) => msg.oneofs.push(o),
-                    MessageEvent::Ignore => (),
+#[derive(Debug)]
+pub struct ParserErrorWithLocation {
+    pub error: ParserError,
+    /// 1-based
+    pub line: u32,
+    /// 1-based
+    pub col: u32,
+}
+
+impl From<ParseIntError> for ParserError {
+    fn from(_: ParseIntError) -> Self {
+        ParserError::ParseIntError
+    }
+}
+
+type ParserResult<T> = Result<T, ParserError>;
+
+
+trait ToU8 {
+    fn to_u8(&self) -> ParserResult<u8>;
+}
+
+trait ToI32 {
+    fn to_i32(&self) -> ParserResult<i32>;
+}
+
+trait ToI64 {
+    fn to_i64(&self) -> ParserResult<i64>;
+}
+
+trait ToChar {
+    fn to_char(&self) -> ParserResult<char>;
+}
+
+impl ToI32 for u64 {
+    fn to_i32(&self) -> ParserResult<i32> {
+        if *self <= i32::max_value() as u64 {
+            Ok(*self as i32)
+        } else {
+            Err(ParserError::IntegerOverflow)
+        }
+    }
+}
+
+impl ToI32 for i64 {
+    fn to_i32(&self) -> ParserResult<i32> {
+        if *self <= i32::max_value() as i64 && *self >= i32::min_value() as i64 {
+            Ok(*self as i32)
+        } else {
+            Err(ParserError::IntegerOverflow)
+        }
+    }
+}
+
+impl ToI64 for u64 {
+    fn to_i64(&self) -> Result<i64, ParserError> {
+        if *self <= i64::max_value() as u64 {
+            Ok(*self as i64)
+        } else {
+            Err(ParserError::IntegerOverflow)
+        }
+    }
+}
+
+impl ToChar for u8 {
+    fn to_char(&self) -> Result<char, ParserError> {
+        if *self <= 0x7f {
+            Ok(*self as char)
+        } else {
+            Err(ParserError::NotUtf8)
+        }
+    }
+}
+
+impl ToU8 for u32 {
+    fn to_u8(&self) -> Result<u8, ParserError> {
+        if *self as u8 as u32 == *self {
+            Ok(*self as u8)
+        } else {
+            Err(ParserError::IntegerOverflow)
+        }
+    }
+}
+
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+struct StrLit {
+    quoted: String,
+}
+
+impl StrLit {
+    /// May fail if not valid UTF8
+    fn decode_utf8(&self) -> ParserResult<String> {
+        assert!(self.quoted.len() >= 2);
+        assert!(self.quoted.as_bytes()[0] == self.quoted.as_bytes()[self.quoted.len() - 1]);
+        let mut lexer = Lexer {
+            input: &self.quoted[1 .. self.quoted.len() - 1],
+            pos: 0,
+            loc: Loc::start(),
+        };
+        let mut r = String::new();
+        while !lexer.eof() {
+            r.push(lexer.next_char_char_value()?);
+        }
+        Ok(r)
+    }
+}
+
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Token {
+    Ident(String),
+    Symbol(char),
+    IntLit(u64),
+    // including quotes
+    StrLit(StrLit),
+    FloatLit(String),
+}
+
+impl Token {
+    /// Back to original
+    fn format(&self) -> String {
+        match self {
+            &Token::Ident(ref s) => s.clone(),
+            &Token::Symbol(c) => c.to_string(),
+            &Token::IntLit(ref i) => i.to_string(),
+            &Token::StrLit(ref s) => s.quoted.clone(),
+            &Token::FloatLit(ref f) => f.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TokenWithLocation {
+    token: Token,
+    loc: Loc,
+}
+
+#[derive(Copy, Clone)]
+struct Lexer<'a> {
+    input: &'a str,
+    pos: usize,
+    loc: Loc,
+}
+
+fn is_letter(c: char) -> bool {
+    c.is_alphabetic() || c == '_'
+}
+
+impl<'a> Lexer<'a> {
+    /// No more chars
+    fn eof(&self) -> bool {
+        self.pos == self.input.len()
+    }
+
+    /// Remaining chars
+    fn rem_chars(&self) -> &'a str {
+        &self.input[self.pos..]
+    }
+
+    fn lookahead_char_is_in(&self, alphabet: &str) -> bool {
+        self.lookahead_char().map_or(false, |c| alphabet.contains(c))
+    }
+
+    fn next_char_opt(&mut self) -> Option<char> {
+        let rem = self.rem_chars();
+        if rem.is_empty() {
+            None
+        } else {
+            let c = rem.chars().next().unwrap();
+            self.pos += rem[..1].len();
+            if c == '\n' {
+                self.loc.line += 1;
+                self.loc.col = FIRST_COL;
+            } else {
+                self.loc.col += 1;
+            }
+            Some(c)
+        }
+    }
+
+    fn next_char(&mut self) -> ParserResult<char> {
+        self.next_char_opt().ok_or(ParserError::UnexpectedEof)
+    }
+
+    /// Skip whitespaces
+    fn skip_whitespaces(&mut self) {
+        self.take_while(|c| c.is_whitespace());
+    }
+
+    fn skip_comment(&mut self) -> ParserResult<()> {
+        if self.skip_if_lookahead_is_str("/*") {
+            let end = "*/";
+            match self.rem_chars().find(end) {
+                None => {
+                    Err(ParserError::UnexpectedEof)
+                }
+                Some(len) => {
+                    let new_pos = self.pos + len + end.len();
+                    self.skip_to_pos(new_pos);
+                    Ok(())
                 }
             }
-            msg
+        } else {
+            Ok(())
         }
-    )
-);
+    }
 
-named!(
-    extensions<Vec<Extension>>,
-    do_parse!(
-        tag!("extend") >> many1!(br) >> extendee: word >> many0!(br) >>
-            fields: fields_in_braces >> (
-                fields.into_iter().map(|field| Extension {
-                    extendee: extendee.clone(),
-                    field
-                }).collect()
-            )
-    )
-);
+    fn skip_block_comment(&mut self) {
+        if self.skip_if_lookahead_is_str("//") {
+            loop {
+                match self.next_char_opt() {
+                    Some('\n') | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
 
-named!(
-    enum_value<EnumValue>,
-    do_parse!(
-        name: word >> many0!(br) >> tag!("=") >> many0!(br) >> number: alt!(hex_integer | integer)
-            >> many0!(br) >> tag!(";") >> many0!(br) >> (EnumValue {
-            name: name,
-            number: number,
+    fn skip_ws(&mut self) -> ParserResult<()> {
+        loop {
+            let pos = self.pos;
+            self.skip_whitespaces();
+            self.skip_comment()?;
+            self.skip_block_comment();
+            if pos == self.pos {
+                // Did not advance
+                return Ok(())
+            }
+        }
+    }
+
+    fn take_while<F>(&mut self, f: F) -> &'a str
+        where F : Fn(char) -> bool
+    {
+        let start = self.pos;
+        while self.lookahead_char().map(&f) == Some(true) {
+            self.next_char_opt().unwrap();
+        }
+        let end = self.pos;
+        &self.input[start..end]
+    }
+
+    fn lookahead_char(&self) -> Option<char> {
+        self.clone().next_char_opt()
+    }
+
+    fn lookahead_is_str(&self, s: &str) -> bool {
+        self.rem_chars().starts_with(s)
+    }
+
+    fn skip_if_lookahead_is_str(&mut self, s: &str) -> bool {
+        if self.lookahead_is_str(s) {
+            let new_pos = self.pos + s.len();
+            self.skip_to_pos(new_pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn next_char_if<P>(&mut self, p: P) -> Option<char>
+        where P : FnOnce(char) -> bool
+    {
+        let mut clone = self.clone();
+        match clone.next_char_opt() {
+            Some(c) if p(c) => {
+                *self = clone;
+                Some(c)
+            },
+            _ => None,
+        }
+    }
+
+    fn next_char_if_eq(&mut self, expect: char) -> bool {
+        self.next_char_if(|c| c == expect) != None
+    }
+
+    fn next_char_if_in(&mut self, alphabet: &str) -> Option<char> {
+        for c in alphabet.chars() {
+            if self.next_char_if_eq(c) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn next_char_expect_eq(&mut self, expect: char) -> ParserResult<()> {
+        if self.next_char_if_eq(expect) {
+            Ok(())
+        } else {
+            Err(ParserError::ExpectChar(expect))
+        }
+    }
+
+    // str functions
+
+    /// properly update line and column
+    fn skip_to_pos(&mut self, new_pos: usize) -> &'a str {
+        assert!(new_pos >= self.pos);
+        assert!(new_pos <= self.input.len());
+        let pos = self.pos;
+        while self.pos != new_pos {
+            self.next_char_opt().unwrap();
+        }
+        &self.input[pos..new_pos]
+    }
+
+    // Protobuf grammar
+
+    // char functions
+
+    // letter = "A" … "Z" | "a" … "z"
+    // https://github.com/google/protobuf/issues/4565
+    fn next_letter_opt(&mut self) -> Option<char> {
+        self.next_char_if(is_letter)
+    }
+
+    // capitalLetter =  "A" … "Z"
+    fn _next_capital_letter_opt(&mut self) -> Option<char> {
+        self.next_char_if(|c| c >= 'A' && c <= 'Z')
+    }
+
+    fn next_ident_part(&mut self) -> Option<char> {
+        self.next_char_if(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    // Identifiers
+
+    // ident = letter { letter | decimalDigit | "_" }
+    fn next_ident_opt(&mut self) -> ParserResult<Option<String>> {
+        if let Some(c) = self.next_letter_opt() {
+            let mut ident = String::new();
+            ident.push(c);
+            while let Some(c) = self.next_ident_part() {
+                ident.push(c);
+            }
+            Ok(Some(ident))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Integer literals
+
+    // hexLit     = "0" ( "x" | "X" ) hexDigit { hexDigit }
+    fn next_hex_lit(&mut self) -> ParserResult<Option<u64>> {
+        Ok(if self.skip_if_lookahead_is_str("0x") || self.skip_if_lookahead_is_str("0X") {
+            let s = self.take_while(|c| c.is_ascii_hexdigit());
+            Some(u64::from_str_radix(s, 16)? as u64)
+        } else {
+            None
         })
-    )
-);
+    }
 
-named!(
-    enumerator<Enumeration>,
-    do_parse!(
-        tag!("enum") >> many1!(br) >> name: word >> many0!(br) >> tag!("{") >> many0!(br)
-            >> values: many0!(enum_value) >> many0!(br) >> tag!("}") >> many0!(br)
-            >> many0!(tag!(";")) >> (Enumeration {
-            name: name,
-            values: values,
+    // decimalLit = ( "1" … "9" ) { decimalDigit }
+    // octalLit   = "0" { octalDigit }
+    fn next_decimal_octal_lit(&mut self) -> ParserResult<Option<u64>> {
+        // do not advance on number parse error
+        let mut clone = self.clone();
+
+        let pos = clone.pos;
+
+        Ok(if clone.next_char_if(|c| c.is_ascii_digit()) != None {
+            clone.take_while(|c| c.is_ascii_digit());
+            let value = clone.input[pos..clone.pos].parse()?;
+            *self = clone;
+            Some(value)
+        } else {
+            None
         })
-    )
-);
+    }
 
-named!(
-    option_ignore<()>,
-    do_parse!(tag!("option") >> many1!(br) >> take_until_and_consume!(";") >> ())
-);
+    // hexDigit     = "0" … "9" | "A" … "F" | "a" … "f"
+    fn next_hex_digit(&mut self) -> ParserResult<u32> {
+        let mut clone = self.clone();
+        let r = match clone.next_char()? {
+            c if c >= '0' && c <= '9' => c as u32 - b'0' as u32,
+            c if c >= 'A' && c <= 'F' => c as u32 - b'A' as u32 + 10,
+            c if c >= 'a' && c <= 'f' => c as u32 - b'a' as u32 + 10,
+            _ => return Err(ParserError::IncorrectInput),
+        };
+        *self = clone;
+        Ok(r)
+    }
 
-named!(
-    service_ignore<()>,
-    do_parse!(
-        tag!("service") >> many1!(br) >> word >> many0!(br) >> tag!("{")
-            >> take_until_and_consume!("}") >> ()
-    )
-);
+    // octalDigit   = "0" … "7"
+    fn next_octal_digit(&mut self) -> ParserResult<u32> {
+        let mut clone = self.clone();
+        let r = match clone.next_char()? {
+            c if c >= '0' && c <= '7' => c as u32 - b'0' as u32,
+            _ => return Err(ParserError::IncorrectInput),
+        };
+        *self = clone;
+        Ok(r)
+    }
 
-enum Event {
-    Syntax(Syntax),
-    Import(String),
-    Package(String),
-    Message(Message),
-    Enum(Enumeration),
-    Extensions(Vec<Extension>),
-    Ignore,
+    // decimalDigit = "0" … "9"
+    fn next_decimal_digit(&mut self) -> ParserResult<u32> {
+        let mut clone = self.clone();
+        let r = match clone.next_char()? {
+            c if c >= '0' && c <= '9' => c as u32 - '0' as u32,
+            _ => return Err(ParserError::IncorrectInput),
+        };
+        *self = clone;
+        Ok(r)
+    }
+
+    // decimals  = decimalDigit { decimalDigit }
+    fn next_decimal_digits(&mut self) -> ParserResult<()> {
+        self.next_decimal_digit()?;
+        self.take_while(|c| c >= '0' && c <= '9');
+        Ok(())
+    }
+
+    // intLit     = decimalLit | octalLit | hexLit
+    fn next_int_lit_opt(&mut self) -> ParserResult<Option<u64>> {
+        self.skip_ws()?;
+        if let Some(i) = self.next_hex_lit()? {
+            return Ok(Some(i));
+        }
+        if let Some(i) = self.next_decimal_octal_lit()? {
+            return Ok(Some(i));
+        }
+        Ok(None)
+    }
+
+    // Floating-point literals
+
+    // exponent  = ( "e" | "E" ) [ "+" | "-" ] decimals
+    fn next_exponent_opt(&mut self) -> ParserResult<Option<()>> {
+        if self.next_char_if_in("eE") != None {
+            self.next_char_if_in("+-");
+            self.next_decimal_digits()?;
+            Ok(Some(()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // floatLit = ( decimals "." [ decimals ] [ exponent ] | decimals exponent | "."decimals [ exponent ] ) | "inf" | "nan"
+    fn next_float_lit(&mut self) -> ParserResult<()> {
+        // "inf" and "nan" are handled as part of ident
+        if self.next_char_if_eq('.') {
+            self.next_decimal_digits()?;
+            self.next_exponent_opt()?;
+        } else {
+            self.next_decimal_digits()?;
+            if self.next_char_if_eq('.') {
+                self.next_decimal_digits()?;
+                self.next_exponent_opt()?;
+            } else {
+                if self.next_exponent_opt()? == None {
+                    return Err(ParserError::IncorrectInput)
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // String literals
+
+    // charValue = hexEscape | octEscape | charEscape | /[^\0\n\\]/
+    // hexEscape = '\' ( "x" | "X" ) hexDigit hexDigit
+    // https://github.com/google/protobuf/issues/4560
+    // octEscape = '\' octalDigit octalDigit octalDigit
+    // charEscape = '\' ( "a" | "b" | "f" | "n" | "r" | "t" | "v" | '\' | "'" | '"' )
+    // quote = "'" | '"'
+    fn next_char_value(&mut self) -> ParserResult<u8> {
+        match self.next_char()? {
+            '"' | '\'' => Err(ParserError::InternalError),
+            '\\' => {
+                match self.next_char()? {
+                    '\'' => Ok(b'\''),
+                    '"' => Ok(b'"'),
+                    '\\' => Ok(b'\\'),
+                    'a' => Ok(b'\x07'),
+                    'b' => Ok(b'\x08'),
+                    'f' => Ok(b'\x0c'),
+                    'n' => Ok(b'\n'),
+                    'r' => Ok(b'\r'),
+                    't' => Ok(b'\t'),
+                    'v' => Ok(b'\x0b'),
+                    'x' => {
+                        let d1 = self.next_hex_digit()?;
+                        let d2 = self.next_hex_digit()?;
+                        Ok(((d1 << 4) | d2) as u8)
+                    }
+                    d if d >= '0' && d <= '7' => {
+                        let mut r = d as u32 - b'0' as u32;
+                        for _ in 0..2 {
+                            match self.next_octal_digit() {
+                                Err(_) => break,
+                                Ok(d) => r = (r << 3) + d,
+                            }
+                        }
+                        Ok(r.to_u8()?)
+                    }
+                    // https://github.com/google/protobuf/issues/4562
+                    c => Ok(c as u8),
+                }
+            }
+            '\n' | '\0' => Err(ParserError::IncorrectInput),
+            c if c as u32 <= 0x7f => Ok(c as u8),
+            _ => Err(ParserError::IncorrectInput),
+        }
+    }
+
+    fn next_char_char_value(&mut self) -> ParserResult<char> {
+        let mut clone = self.clone();
+        let c = clone.next_char_value()?;
+        if c <= 0x7f {
+            *self = clone;
+            Ok(c as char)
+        } else {
+            Err(ParserError::NotUtf8)
+        }
+    }
+
+    // https://github.com/google/protobuf/issues/4564
+    // strLit = ( "'" { charValue } "'" ) | ( '"' { charValue } '"' )
+    fn next_str_lit_raw(&mut self) -> ParserResult<String> {
+        let mut raw = String::new();
+
+        let mut first = true;
+        loop {
+            if !first {
+                self.skip_ws()?;
+            }
+
+            let start = self.pos;
+
+            let q = match self.next_char_if_in("'\"") {
+                Some(q) => q,
+                None if !first => break,
+                None => return Err(ParserError::IncorrectInput),
+            };
+            first = false;
+            while self.lookahead_char() != Some(q) {
+                self.next_char_value()?;
+            }
+            self.next_char_expect_eq(q)?;
+
+            // TODO: do something with quotes inside concatenated idents
+            raw.push_str(&self.input[start..self.pos]);
+        }
+        Ok(raw)
+    }
+
+    fn next_str_lit_raw_opt(&mut self) -> ParserResult<Option<String>> {
+        if self.lookahead_char_is_in("'\"") {
+            Ok(Some(self.next_str_lit_raw()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_token_inner(&mut self) -> ParserResult<Token> {
+        if let Some(ident) = self.next_ident_opt()? {
+            let token = if ident == "nan" || ident == "inf" {
+                Token::FloatLit(ident.to_owned())
+            } else {
+                Token::Ident(ident.to_owned())
+            };
+            return Ok(token);
+        }
+
+        let mut clone = self.clone();
+        let pos = clone.pos;
+        if let Ok(_) = clone.next_float_lit() {
+            let mut lit = self.input[pos..self.pos].to_owned();
+            *self = clone;
+            return Ok(Token::FloatLit(lit));
+        }
+
+        if let Some(lit) = self.next_int_lit_opt()? {
+            return Ok(Token::IntLit(lit));
+        }
+
+        if let Some(lit) = self.next_str_lit_raw_opt()? {
+            return Ok(Token::StrLit(StrLit { quoted: lit.to_owned() }));
+        }
+
+        // This branch must be after str lit
+        if let Some(c) = self.next_char_if(|c| c.is_ascii_punctuation()) {
+            return Ok(Token::Symbol(c));
+        }
+
+        if let Some(ident) = self.next_ident_opt()? {
+            return Ok(Token::Ident(ident));
+        }
+
+        Err(ParserError::IncorrectInput)
+    }
+
+    fn next_token(&mut self) -> ParserResult<Option<TokenWithLocation>> {
+        self.skip_ws()?;
+        let loc = self.loc;
+
+        Ok(if self.eof() {
+            None
+        } else {
+            let token = self.next_token_inner()?;
+            // Skip whitespace here to update location
+            // to the beginning of the next token
+            self.skip_ws()?;
+            Some(TokenWithLocation { token, loc })
+        })
+    }
 }
 
-named!(
-    event<Event>,
-    alt!(syntax => { |s| Event::Syntax(s) } |
-            import => { |i| Event::Import(i) } |
-            package => { |p| Event::Package(p) } |
-            message => { |m| Event::Message(m) } |
-            enumerator => { |e| Event::Enum(e) } |
-            extensions => { |e| Event::Extensions(e) } |
-            option_ignore => { |_| Event::Ignore } |
-            service_ignore => { |_| Event::Ignore } |
-            br => { |_| Event::Ignore })
-);
 
-named!(pub file_descriptor<FileDescriptor>,
-       map!(many0!(event), |events: Vec<Event>| {
-           let mut desc = FileDescriptor::default();
-           for event in events {
-               match event {
-                   Event::Syntax(s) => desc.syntax = s,
-                   Event::Import(i) => desc.import_paths.push(i),
-                   Event::Package(p) => desc.package = p,
-                   Event::Message(m) => desc.messages.push(m),
-                   Event::Enum(e) => desc.enums.push(e),
-                   Event::Extensions(e) => desc.extensions.extend(e),
-                   Event::Ignore => (),
-               }
-           }
-           desc
-       }));
+// TODO: do not Clone
+#[derive(Clone)]
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+    syntax: Syntax,
+    next_token: Option<TokenWithLocation>,
+}
+
+#[derive(Default)]
+pub struct MessageBody {
+    pub fields: Vec<Field>,
+    pub oneofs: Vec<OneOf>,
+    pub reserved_nums: Vec<FieldNumberRange>,
+    pub reserved_names: Vec<String>,
+    pub messages: Vec<Message>,
+    pub enums: Vec<Enumeration>,
+}
+
+impl<'a> Parser<'a> {
+    pub fn new(input: &'a str) -> Parser<'a> {
+        Parser {
+            lexer: Lexer {
+                input,
+                pos: 0,
+                loc: Loc::start(),
+            },
+            syntax: Syntax::Proto2,
+            next_token: None,
+        }
+    }
+
+    pub fn loc(&self) -> Loc {
+        self.next_token.clone().map_or(self.lexer.loc, |n| n.loc)
+    }
+
+    fn lookahead(&mut self) -> ParserResult<Option<&Token>> {
+        Ok(match self.next_token {
+            Some(ref token) => Some(&token.token),
+            None => {
+                self.next_token = self.lexer.next_token()?;
+                match self.next_token {
+                    Some(ref token) => Some(&token.token),
+                    None => None,
+                }
+            }
+        })
+    }
+
+    fn lookahead_some(&mut self) -> ParserResult<&Token> {
+        match self.lookahead()? {
+            Some(token) => Ok(token),
+            None => Err(ParserError::UnexpectedEof),
+        }
+    }
+
+    fn next(&mut self) -> ParserResult<Option<Token>> {
+        self.lookahead()?;
+        Ok(self.next_token.take().map(|TokenWithLocation { token, .. }| token))
+    }
+
+    fn next_some(&mut self) -> ParserResult<Token> {
+        match self.next()? {
+            Some(token) => Ok(token),
+            None => Err(ParserError::UnexpectedEof),
+        }
+    }
+
+    /// Can be called only after lookahead, otherwise it's error
+    fn advance(&mut self) -> ParserResult<Token> {
+        self.next_token.take()
+            .map(|TokenWithLocation { token, .. }| token)
+            .ok_or(ParserError::InternalError)
+    }
+
+    /// No more tokens
+    fn syntax_eof(&mut self) -> ParserResult<bool> {
+        Ok(self.lookahead()?.is_none())
+    }
+
+    fn next_token_if_map<P, R>(&mut self, p: P) -> ParserResult<Option<R>>
+        where P : FnOnce(&Token) -> Option<R>
+    {
+        self.lookahead()?;
+        let v = match self.next_token {
+            Some(ref token) => {
+                match p(&token.token) {
+                    Some(v) => v,
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        self.next_token = None;
+        Ok(Some(v))
+    }
+
+    fn next_token_check_map<P, R>(&mut self, p: P) -> ParserResult<R>
+        where P : FnOnce(&Token) -> ParserResult<R>
+    {
+        self.lookahead()?;
+        let r = match self.next_token {
+            Some(ref token) => p(&token.token)?,
+            None => return Err(ParserError::UnexpectedEof),
+        };
+        self.next_token = None;
+        Ok(r)
+    }
+
+    fn next_token_if<P>(&mut self, p: P) -> ParserResult<Option<Token>>
+        where P : FnOnce(&Token) -> bool
+    {
+        self.next_token_if_map(|token| if p(token) { Some(token.clone()) } else { None })
+    }
+
+    fn next_ident_if_in(&mut self, idents: &[&str]) -> ParserResult<Option<String>> {
+        let v = match self.lookahead()? {
+            Some(&Token::Ident(ref next)) => {
+                if idents.into_iter().find(|&i| i == next).is_some() {
+                    next.clone()
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => return Ok(None),
+        };
+        self.advance()?;
+        Ok(Some(v))
+    }
+
+    fn next_ident_if_eq(&mut self, word: &str) -> ParserResult<bool> {
+        Ok(self.next_ident_if_in(&[word])? != None)
+    }
+
+    fn next_symbol_if_eq(&mut self, symbol: char) -> ParserResult<bool> {
+        Ok(self.next_token_if(|token| match token {
+            &Token::Symbol(c) if c == symbol => true,
+            _ => false,
+        })? != None)
+    }
+
+    fn next_symbol_expect_eq(&mut self, symbol: char) -> ParserResult<()> {
+        if self.lookahead_is_symbol(symbol)? {
+            self.advance()?;
+            Ok(())
+        } else {
+            Err(ParserError::ExpectChar(symbol))
+        }
+    }
+
+    fn lookahead_if_symbol(&mut self) -> ParserResult<Option<char>> {
+        Ok(match self.lookahead()? {
+            Some(&Token::Symbol(c)) => Some(c),
+            _ => None,
+        })
+    }
+
+    fn lookahead_is_symbol(&mut self, symbol: char) -> ParserResult<bool> {
+        Ok(self.lookahead_if_symbol()? == Some(symbol))
+    }
+
+    // Protobuf grammar
+
+    fn next_ident(&mut self) -> ParserResult<String> {
+        self.next_token_check_map(|token| {
+            match token {
+                &Token::Ident(ref ident) => Ok(ident.clone()),
+                _ => Err(ParserError::ExpectIdent),
+            }
+        })
+    }
+
+    fn next_str_lit(&mut self) -> ParserResult<StrLit> {
+        self.next_token_check_map(|token| {
+            match token {
+                &Token::StrLit(ref str_lit) => Ok(str_lit.clone()),
+                _ => Err(ParserError::IncorrectInput),
+            }
+        })
+    }
+
+    // fullIdent = ident { "." ident }
+    fn next_full_ident(&mut self) -> ParserResult<String> {
+        let mut full_ident = String::new();
+        // https://github.com/google/protobuf/issues/4563
+        if self.next_symbol_if_eq('.')? {
+            full_ident.push('.');
+        }
+        full_ident.push_str(&self.next_ident()?);
+        while self.next_symbol_if_eq('.')? {
+            full_ident.push('.');
+            full_ident.push_str(&self.next_ident()?);
+        }
+        Ok(full_ident)
+    }
+
+    // messageName = ident
+    // enumName = ident
+    // messageType = [ "." ] { ident "." } messageName
+    // enumType = [ "." ] { ident "." } enumName
+    fn next_message_or_enum_type(&mut self) -> ParserResult<String> {
+        let mut full_name = String::new();
+        if self.next_symbol_if_eq('.')? {
+            full_name.push('.');
+        }
+        full_name.push_str(&self.next_ident()?);
+        while self.next_symbol_if_eq('.')? {
+            full_name.push('.');
+            full_name.push_str(&self.next_ident()?);
+        }
+        Ok(full_name)
+    }
+
+    // groupName = capitalLetter { letter | decimalDigit | "_" }
+    fn next_group_name(&mut self) -> ParserResult<String> {
+        // lexer cannot distinguish between group name and other ident
+        // TODO: check starts with upper case
+        self.next_ident()
+    }
+
+    // Boolean
+
+    // boolLit = "true" | "false"
+    fn next_bool_lit_opt(&mut self) -> ParserResult<Option<bool>> {
+        Ok(if self.next_ident_if_eq("true")? {
+            Some(true)
+        } else if self.next_ident_if_eq("false")? {
+            Some(false)
+        } else {
+            None
+        })
+    }
+
+    // Constant
+
+    fn next_num_lit(&mut self) -> ParserResult<String> {
+        self.next_token_check_map(|token| {
+            match token {
+                &Token::IntLit(i) => Ok(i.to_string()),
+                &Token::FloatLit(ref s) => Ok(s.clone()),
+                _ => Err(ParserError::IncorrectInput),
+            }
+        })
+    }
+
+    // constant = fullIdent | ( [ "-" | "+" ] intLit ) | ( [ "-" | "+" ] floatLit ) |
+    //            strLit | boolLit
+    fn next_constant(&mut self) -> ParserResult<String> {
+        // https://github.com/google/protobuf/blob/a21f225824e994ebd35e8447382ea4e0cd165b3c/src/google/protobuf/unittest_custom_options.proto#L350
+        if self.lookahead_is_symbol('{')? {
+            return self.next_braces();
+        }
+
+        if let Some(b) = self.next_bool_lit_opt()? {
+            return Ok(b.to_string());
+        }
+
+        if let &Token::Symbol(c) = self.lookahead_some()? {
+            if c == '+' || c == '-' {
+                self.advance()?;
+                return Ok(format!("{}{}", c, self.next_num_lit()?));
+            }
+        }
+
+        if let Some(r) = self.next_token_if_map(|token| {
+                match token {
+                    &Token::StrLit(ref s) => Some(s.quoted.clone()),
+                    _ => None,
+                }
+            })?
+        {
+            return Ok(r);
+        }
+
+        match self.lookahead_some()? {
+            &Token::IntLit(..) | &Token::FloatLit(..) => return self.next_num_lit(),
+            &Token::Ident(..) => return self.next_full_ident(),
+            _ => {},
+        }
+
+        Err(ParserError::ExpectConstant)
+    }
+
+    fn next_int_lit(&mut self) -> ParserResult<u64> {
+        self.next_token_check_map(|token| {
+            match token {
+                &Token::IntLit(i) => Ok(i),
+                _ => Err(ParserError::IncorrectInput),
+            }
+        })
+    }
+
+    // Syntax
+
+    // syntax = "syntax" "=" quote "proto2" quote ";"
+    // syntax = "syntax" "=" quote "proto3" quote ";"
+    fn next_syntax(&mut self) -> ParserResult<Option<Syntax>> {
+        if self.next_ident_if_eq("syntax")? {
+            self.next_symbol_expect_eq('=')?;
+            let syntax_str = self.next_str_lit()?.decode_utf8()?;
+            let syntax = if syntax_str == "proto2" {
+                Syntax::Proto2
+            } else if syntax_str == "proto3" {
+                Syntax::Proto3
+            } else {
+                return Err(ParserError::UnknownSyntax);
+            };
+            self.next_symbol_expect_eq(';')?;
+            Ok(Some(syntax))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Import Statement
+
+    // import = "import" [ "weak" | "public" ] strLit ";"
+    fn next_import_opt(&mut self) -> ParserResult<Option<String>> {
+        if self.next_ident_if_eq("import")? {
+            self.next_ident_if_in(&["weak", "public"])?;
+            let import_path = self.next_str_lit()?.decode_utf8()?;
+            self.next_symbol_expect_eq(';')?;
+            Ok(Some(import_path))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Package
+
+    // package = "package" fullIdent ";"
+    fn next_package_opt(&mut self) -> ParserResult<Option<String>> {
+        if self.next_ident_if_eq("package")? {
+            let package = self.next_full_ident()?;
+            self.next_symbol_expect_eq(';')?;
+            Ok(Some(package))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Option
+
+    fn next_ident_or_braced(&mut self) -> ParserResult<String> {
+        let mut ident_or_braced = String::new();
+        if self.next_symbol_if_eq('(')? {
+            ident_or_braced.push('(');
+            ident_or_braced.push_str(&self.next_full_ident()?);
+            self.next_symbol_expect_eq(')')?;
+            ident_or_braced.push(')');
+        } else {
+            ident_or_braced.push_str(&self.next_ident()?);
+        }
+        Ok(ident_or_braced)
+    }
+
+    // https://github.com/google/protobuf/issues/4563
+    // optionName = ( ident | "(" fullIdent ")" ) { "." ident }
+    fn next_option_name(&mut self) -> ParserResult<String> {
+        let mut option_name = String::new();
+        option_name.push_str(&self.next_ident_or_braced()?);
+        while self.next_symbol_if_eq('.')? {
+            option_name.push('.');
+            option_name.push_str(&self.next_ident_or_braced()?);
+        }
+        Ok(option_name)
+    }
+
+    // option = "option" optionName  "=" constant ";"
+    fn next_option_opt(&mut self) -> ParserResult<Option<()>> {
+        if self.next_ident_if_eq("option")? {
+            let _option_name = self.next_option_name()?;
+            self.next_symbol_expect_eq('=')?;
+            self.next_constant()?;
+            self.next_symbol_expect_eq(';')?;
+            Ok(Some(()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Fields
+
+    // label = "required" | "optional" | "repeated"
+    fn next_label(&mut self, with_labels: bool) -> ParserResult<Rule> {
+        let map = &[
+            ("optional", Rule::Optional),
+            ("required", Rule::Required),
+            ("repeated", Rule::Repeated),
+        ];
+        for &(name, value) in map {
+            let mut clone = self.clone();
+            if clone.next_ident_if_eq(name)? {
+                if !with_labels && value != Rule::Repeated {
+                    return Err(ParserError::LabelNotAllowed);
+                }
+                *self = clone;
+                return Ok(value);
+            }
+        }
+        if with_labels {
+            Err(ParserError::LabelRequired)
+        } else {
+            Ok(Rule::Optional)
+        }
+    }
+
+    fn next_field_type(&mut self) -> ParserResult<FieldType> {
+        let simple = &[
+            ("int32", FieldType::Int32),
+            ("int64", FieldType::Int64),
+            ("uint32", FieldType::Uint32),
+            ("uint64", FieldType::Uint64),
+            ("sint32", FieldType::Sint32),
+            ("sint64", FieldType::Sint64),
+            ("fixed32", FieldType::Fixed32),
+            ("sfixed32", FieldType::Sfixed32),
+            ("fixed64", FieldType::Fixed64),
+            ("sfixed64", FieldType::Sfixed64),
+            ("bool", FieldType::Bool),
+            ("string", FieldType::String),
+            ("bytes", FieldType::Bytes),
+            ("float", FieldType::Float),
+            ("double", FieldType::Double),
+        ];
+        for &(ref n, ref t) in simple {
+            if self.next_ident_if_eq(n)? {
+                return Ok(t.clone());
+            }
+        }
+
+        if let Some(t) = self.next_map_field_type_opt()? {
+            return Ok(t);
+        }
+
+        let message_or_enum = self.next_message_or_enum_type()?;
+        Ok(FieldType::MessageOrEnum(message_or_enum))
+    }
+
+    fn next_field_number(&mut self) -> ParserResult<i32> {
+        self.next_token_check_map(|token| {
+            match token {
+                &Token::IntLit(i) => i.to_i32(),
+                _ => Err(ParserError::IncorrectInput),
+            }
+        })
+    }
+
+    // fieldOption = optionName "=" constant
+    fn next_field_option(&mut self) -> ParserResult<(String, String)> {
+        let name = self.next_option_name()?;
+        self.next_symbol_expect_eq('=')?;
+        let value = self.next_constant()?;
+        Ok((name, value))
+    }
+
+    // fieldOptions = fieldOption { ","  fieldOption }
+    fn next_field_options(&mut self) -> ParserResult<Vec<(String, String)>> {
+        let mut options = Vec::new();
+
+        options.push(self.next_field_option()?);
+
+        while self.next_symbol_if_eq(',')? {
+            options.push(self.next_field_option()?);
+        }
+
+        Ok(options)
+    }
+
+    // field = label type fieldName "=" fieldNumber [ "[" fieldOptions "]" ] ";"
+    // group = label "group" groupName "=" fieldNumber messageBody
+    fn next_field(&mut self, with_labels: bool) -> ParserResult<Field> {
+        let rule = if self.clone().next_ident_if_eq("map")? {
+            Rule::Optional
+        } else {
+            self.next_label(with_labels)?
+        };
+        if self.next_ident_if_eq("group")? {
+            let name = self.next_group_name()?.to_owned();
+            self.next_symbol_expect_eq('=')?;
+            let number = self.next_field_number()?;
+
+            let with_labels = self.syntax == Syntax::Proto2;
+
+            // TODO: some message body parts are not allowed in group
+            let MessageBody {
+                fields,
+                ..
+            } = self.next_message_body(with_labels)?;
+
+            Ok(Field {
+                name,
+                rule,
+                typ: FieldType::Group(fields),
+                number,
+                default: None,
+                packed: None,
+                deprecated: false,
+            })
+        } else {
+            let typ = self.next_field_type()?;
+            let name = self.next_ident()?.to_owned();
+            self.next_symbol_expect_eq('=')?;
+            let number = self.next_field_number()?;
+
+            let mut default = None;
+            let mut packed = None;
+            let mut deprecated = false;
+
+            if self.next_symbol_if_eq('[')? {
+                for (n, v) in self.next_field_options()? {
+                    if n == "default" {
+                        default = Some(v);
+                    } else if n == "packed" {
+                        if v == "true" {
+                            packed = Some(true);
+                        } else if v == "false" {
+                            packed = Some(false);
+                        } else {
+                            return Err(ParserError::IncorrectInput);
+                        }
+                    } else if n == "deprecated" {
+                        if v == "true" {
+                            deprecated = true;
+                        } else if v == "false" {
+                            deprecated = false;
+                        } else {
+                            return Err(ParserError::IncorrectInput);
+                        }
+                    }
+                }
+                self.next_symbol_expect_eq(']')?;
+            }
+            self.next_symbol_expect_eq(';')?;
+            Ok(Field {
+                name,
+                rule,
+                typ,
+                number,
+                default,
+                packed,
+                deprecated,
+            })
+        }
+    }
+
+    // oneof = "oneof" oneofName "{" { oneofField | emptyStatement } "}"
+    // oneofField = type fieldName "=" fieldNumber [ "[" fieldOptions "]" ] ";"
+    fn next_oneof_opt(&mut self) -> ParserResult<Option<OneOf>> {
+        if self.next_ident_if_eq("oneof")? {
+            let name = self.next_ident()?.to_owned();
+            // TODO: use proper oneof fields parser
+            let MessageBody { fields, .. } = self.next_message_body(false)?;
+            Ok(Some(OneOf {
+                name,
+                fields,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // mapField = "map" "<" keyType "," type ">" mapName "=" fieldNumber [ "[" fieldOptions "]" ] ";"
+    // keyType = "int32" | "int64" | "uint32" | "uint64" | "sint32" | "sint64" |
+    //           "fixed32" | "fixed64" | "sfixed32" | "sfixed64" | "bool" | "string"
+    fn next_map_field_type_opt(&mut self) -> ParserResult<Option<FieldType>> {
+        if self.next_ident_if_eq("map")? {
+            self.next_symbol_expect_eq('<')?;
+            // TODO: restrict key types
+            let key = self.next_field_type()?;
+            self.next_symbol_expect_eq(',')?;
+            let value = self.next_field_type()?;
+            self.next_symbol_expect_eq('>')?;
+            Ok(Some(FieldType::Map(Box::new((key, value)))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Extensions and Reserved
+
+    // Extensions
+
+    // range =  intLit [ "to" ( intLit | "max" ) ]
+    fn next_range(&mut self) -> ParserResult<FieldNumberRange> {
+        let from = self.next_field_number()?;
+        let to = if self.next_ident_if_eq("to")? {
+            if self.next_ident_if_eq("max")? {
+                i32::max_value()
+            } else {
+                self.next_field_number()?
+            }
+        } else {
+            from
+        };
+        Ok(FieldNumberRange { from, to })
+    }
+
+    // ranges = range { "," range }
+    fn next_ranges(&mut self) -> ParserResult<Vec<FieldNumberRange>> {
+        let mut ranges = Vec::new();
+        ranges.push(self.next_range()?);
+        while self.next_symbol_if_eq(',')? {
+            ranges.push(self.next_range()?);
+        }
+        Ok(ranges)
+    }
+
+    // extensions = "extensions" ranges ";"
+    fn next_extensions_opt(&mut self) -> ParserResult<Option<Vec<FieldNumberRange>>> {
+        if self.next_ident_if_eq("extensions")? {
+            Ok(Some(self.next_ranges()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Reserved
+
+    // Grammar is incorrect: https://github.com/google/protobuf/issues/4558
+    // reserved = "reserved" ( ranges | fieldNames ) ";"
+    // fieldNames = fieldName { "," fieldName }
+    fn next_reserved_opt(&mut self) -> ParserResult<Option<(Vec<FieldNumberRange>, Vec<String>)>> {
+        if self.next_ident_if_eq("reserved")? {
+            let (ranges, names) =
+                if let &Token::StrLit(..) = self.lookahead_some()? {
+                    let mut names = Vec::new();
+                    names.push(self.next_str_lit()?.decode_utf8()?);
+                    while self.next_symbol_if_eq(',')? {
+                        names.push(self.next_str_lit()?.decode_utf8()?);
+                    }
+                    (Vec::new(), names)
+                } else {
+                    (self.next_ranges()?, Vec::new())
+                };
+
+            self.next_symbol_expect_eq(';')?;
+
+            Ok(Some((ranges, names)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Top Level definitions
+
+    // Enum definition
+
+    // enumValueOption = optionName "=" constant
+    fn next_enum_value_option(&mut self) -> ParserResult<()> {
+        self.next_option_name()?;
+        self.next_symbol_expect_eq('=')?;
+        self.next_constant()?;
+        Ok(())
+    }
+
+    // https://github.com/google/protobuf/issues/4561
+    fn next_enum_value(&mut self) -> ParserResult<i32> {
+        let minus = self.next_symbol_if_eq('-')?;
+        let lit = self.next_int_lit()?;
+        Ok(if minus {
+            let unsigned = lit.to_i64()?;
+            match unsigned.checked_neg() {
+                Some(neg) => neg.to_i32()?,
+                None => return Err(ParserError::IntegerOverflow),
+            }
+        } else {
+            lit.to_i32()?
+        })
+    }
+
+    // enumField = ident "=" intLit [ "[" enumValueOption { ","  enumValueOption } "]" ]";"
+    fn next_enum_field(&mut self) -> ParserResult<EnumValue> {
+        let name = self.next_ident()?.to_owned();
+        self.next_symbol_expect_eq('=')?;
+        let number = self.next_enum_value()?;
+        if self.next_symbol_if_eq('[')? {
+            self.next_enum_value_option()?;
+            while self.next_symbol_if_eq(',')? {
+                self.next_enum_value_option()?;
+            }
+            self.next_symbol_expect_eq(']')?;
+        }
+
+        Ok(EnumValue { name, number })
+    }
+
+    // enum = "enum" enumName enumBody
+    // enumBody = "{" { option | enumField | emptyStatement } "}"
+    fn next_enum_opt(&mut self) -> ParserResult<Option<Enumeration>> {
+        if self.next_ident_if_eq("enum")? {
+            let name = self.next_ident()?.to_owned();
+            let mut values = Vec::new();
+            self.next_symbol_expect_eq('{')?;
+            while self.lookahead_if_symbol()? != Some('}') {
+                // emptyStatement
+                if self.next_symbol_if_eq(';')? {
+                    continue;
+                }
+
+                if let Some(..) = self.next_option_opt()? {
+                    continue;
+                }
+
+                values.push(self.next_enum_field()?);
+            }
+            self.next_symbol_expect_eq('}')?;
+            Ok(Some(Enumeration { name, values }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Message definition
+
+    // messageBody = "{" { field | enum | message | extend | extensions | group |
+    //               option | oneof | mapField | reserved | emptyStatement } "}"
+    fn next_message_body(&mut self, with_labels: bool) -> ParserResult<MessageBody> {
+        self.next_symbol_expect_eq('{')?;
+
+        let mut r = MessageBody::default();
+
+        while self.lookahead_if_symbol()? != Some('}') {
+            // emptyStatement
+            if self.next_symbol_if_eq(';')? {
+                continue;
+            }
+
+            if let Some((field_nums, field_names)) = self.next_reserved_opt()? {
+                r.reserved_nums.extend(field_nums);
+                r.reserved_names.extend(field_names);
+                continue;
+            }
+
+            if let Some(oneof) = self.next_oneof_opt()? {
+                r.oneofs.push(oneof);
+                continue;
+            }
+
+            if let Some(_option) = self.next_option_opt()? {
+                continue;
+            }
+
+            if let Some(_extensions) = self.next_extensions_opt()? {
+                continue;
+            }
+
+            if let Some(_extend) = self.next_extend_opt()? {
+                continue;
+            }
+
+            if let Some(nested_message) = self.next_message_opt()? {
+                r.messages.push(nested_message);
+                continue;
+            }
+
+            if let Some(nested_enum) = self.next_enum_opt()? {
+                r.enums.push(nested_enum);
+                continue;
+            }
+
+            r.fields.push(self.next_field(with_labels)?);
+        }
+
+        self.next_symbol_expect_eq('}')?;
+
+        Ok(r)
+    }
+
+    // message = "message" messageName messageBody
+    fn next_message_opt(&mut self) -> ParserResult<Option<Message>> {
+        if self.next_ident_if_eq("message")? {
+            let name = self.next_ident()?.to_owned();
+
+            let with_labels = self.syntax == Syntax::Proto2;
+
+            let MessageBody {
+                fields,
+                oneofs,
+                reserved_nums,
+                reserved_names,
+                messages,
+                enums,
+            } = self.next_message_body(with_labels)?;
+
+            Ok(Some(Message {
+                name,
+                fields,
+                oneofs,
+                reserved_nums,
+                reserved_names,
+                messages,
+                enums,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Extend
+
+    // extend = "extend" messageType "{" {field | group | emptyStatement} "}"
+    fn next_extend_opt(&mut self) -> ParserResult<Option<Vec<Extension>>> {
+        if self.next_ident_if_eq("extend")? {
+            let extendee = self.next_message_or_enum_type()?;
+
+            let with_labels = self.syntax == Syntax::Proto2;
+
+            // TODO: use specific parser
+            let MessageBody { fields, .. } = self.next_message_body(with_labels)?;
+
+            let extensions = fields.into_iter().map(|field| {
+                let extendee = extendee.clone();
+                Extension { extendee, field }
+            }).collect();
+
+            Ok(Some(extensions))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Service definition
+
+    fn next_braces(&mut self) -> ParserResult<String> {
+        let mut r = String::new();
+        self.next_symbol_expect_eq('{')?;
+        r.push('{');
+        loop {
+            if self.lookahead_if_symbol()? == Some('{') {
+                r.push_str(&self.next_braces()?);
+                continue;
+            }
+            let next = self.next_some()?;
+            r.push_str(&next.format());
+            if let Token::Symbol('}') = next {
+                break;
+            }
+        }
+        Ok(r)
+    }
+
+    // service = "service" serviceName "{" { option | rpc | stream | emptyStatement } "}"
+    // rpc = "rpc" rpcName "(" [ "stream" ] messageType ")" "returns" "(" [ "stream" ]
+    //       messageType ")" (( "{" { option | emptyStatement } "}" ) | ";" )
+    // stream = "stream" streamName "(" messageType "," messageType ")" (( "{"
+    //        { option | emptyStatement } "}") | ";" )
+    fn next_service_opt(&mut self) -> ParserResult<Option<()>> {
+        if self.next_ident_if_eq("service")? {
+            let _name = self.next_ident()?;
+            self.next_braces()?;
+            Ok(Some(()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Proto file
+
+    // proto = syntax { import | package | option | topLevelDef | emptyStatement }
+    // topLevelDef = message | enum | extend | service
+    pub fn next_proto(&mut self) -> ParserResult<FileDescriptor> {
+        let syntax = self.next_syntax()?.unwrap_or(Syntax::Proto2);
+        self.syntax = syntax;
+
+        let mut import_paths = Vec::new();
+        let mut package = String::new();
+        let mut messages = Vec::new();
+        let mut enums = Vec::new();
+        let mut extensions = Vec::new();
+
+        while !self.syntax_eof()? {
+            if let Some(import_path) = self.next_import_opt()? {
+                import_paths.push(import_path);
+                continue;
+            }
+
+            if let Some(next_package) = self.next_package_opt()? {
+                package = next_package.to_owned();
+                continue;
+            }
+
+            if let Some(_option) = self.next_option_opt()? {
+                continue;
+            }
+
+            if let Some(message) = self.next_message_opt()? {
+                messages.push(message);
+                continue;
+            }
+
+            if let Some(enumeration) = self.next_enum_opt()? {
+                enums.push(enumeration);
+                continue;
+            }
+
+            if let Some(more_extensions) = self.next_extend_opt()? {
+                extensions.extend(more_extensions);
+                continue;
+            }
+
+            if let Some(_service) = self.next_service_opt()? {
+                continue;
+            }
+
+            if self.next_symbol_if_eq(';')? {
+                continue;
+            }
+
+            return Err(ParserError::IncorrectInput);
+        }
+
+        Ok(FileDescriptor {
+            import_paths,
+            package,
+            syntax,
+            messages,
+            enums,
+            extensions,
+        })
+    }
+}
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn parse<P, R>(input: &str, parse_what: P) -> R
+        where P : FnOnce(&mut Parser) -> ParserResult<R>
+    {
+        let mut parser = Parser::new(input);
+        let r = parse_what(&mut parser)
+            .expect(&format!("parse failed at {}", parser.loc()));
+        let eof = parser.syntax_eof().expect(&format!("check eof failed at {}", parser.loc()));
+        assert!(eof, "{}", parser.loc());
+        r
+    }
+
+    fn parse_opt<P, R>(input: &str, parse_what: P) -> R
+        where P : FnOnce(&mut Parser) -> ParserResult<Option<R>>
+    {
+        let mut parser = Parser::new(input);
+        let o = parse_what(&mut parser)
+            .expect(&format!("parse failed at {}", parser.loc()));
+        let r = o.expect(&format!("parser returned none at {}", parser.loc()));
+        assert!(parser.syntax_eof().unwrap());
+        r
+    }
+
+    #[test]
+    fn test_ident() {
+        let msg = r#"  aabb_c  "#;
+        let mess = parse(msg, |p| p.next_ident().map(|s| s.to_owned()));
+        assert_eq!("aabb_c", mess);
+    }
+
+    #[test]
+    fn test_str_lit() {
+        let msg = r#"  "a\nb"  "#;
+        let mess = parse(msg, |p| p.next_str_lit());
+        assert_eq!(StrLit { quoted: r#""a\nb""#.to_owned() }, mess);
+    }
+
+    #[test]
+    fn test_syntax() {
+        let msg = r#"  syntax = "proto3";  "#;
+        let mess = parse_opt(msg, |p| p.next_syntax());
+        assert_eq!(Syntax::Proto3, mess);
+    }
 
     #[test]
     fn test_message() {
@@ -387,10 +1650,8 @@ mod test {
         repeated MaturityInfo maturitySet = 10;
     }"#;
 
-        let mess = message(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(10, mess.fields.len());
-        }
+        let mess = parse_opt(msg, |p| p.next_message_opt());
+        assert_eq!(10, mess.fields.len());
     }
 
     #[test]
@@ -402,20 +1663,15 @@ mod test {
                 CANCELED          = 3;
     }"#;
 
-        let enumeration = enumerator(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = enumeration {
-            assert_eq!(4, mess.values.len());
-        }
+        let enumeration = parse_opt(msg, |p| p.next_enum_opt());
+        assert_eq!(4, enumeration.values.len());
     }
 
     #[test]
     fn test_ignore() {
         let msg = r#"option optimize_for = SPEED;"#;
 
-        match option_ignore(msg.as_bytes()) {
-            ::nom::IResult::Done(_, _) => (),
-            e => panic!("Expecting done {:?}", e),
-        }
+        parse_opt(msg, |p| p.next_option_opt());
     }
 
     #[test]
@@ -425,11 +1681,12 @@ mod test {
     import "test_import_nested_imported_pb.proto";
 
     message ContainsImportedNested {
-        optional ContainerForNested.NestedMessage m = 1;
-        optional ContainerForNested.NestedEnum e = 2;
+        ContainerForNested.NestedMessage m = 1;
+        ContainerForNested.NestedEnum e = 2;
     }
     "#;
-        let desc = file_descriptor(msg.as_bytes()).to_full_result().unwrap();
+        let desc = parse(msg, |p| p.next_proto());
+
         assert_eq!(
             vec!["test_import_nested_imported_pb.proto"],
             desc.import_paths
@@ -446,7 +1703,7 @@ mod test {
         optional ContainerForNested.NestedEnum e = 2;
     }
     "#;
-        let desc = file_descriptor(msg.as_bytes()).to_full_result().unwrap();
+        let desc = parse(msg, |p| p.next_proto());
         assert_eq!("foo.bar".to_string(), desc.package);
     }
 
@@ -458,13 +1715,11 @@ mod test {
             repeated int32 a = 1;
             optional string b = 2;
         }
-        optional b = 1;
+        optional string b = 1;
     }"#;
 
-        let mess = message(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert!(mess.messages.len() == 1);
-        }
+        let mess = parse_opt(msg, |p| p.next_message_opt());
+        assert_eq!(1, mess.messages.len());
     }
 
     #[test]
@@ -474,18 +1729,14 @@ mod test {
         optional map<string, int32> b = 1;
     }"#;
 
-        let mess = message(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(1, mess.fields.len());
-            match mess.fields[0].typ {
-                FieldType::Map(ref f) => match &**f {
-                    &(FieldType::String, FieldType::Int32) => (),
-                    ref f => panic!("Expecting Map<String, Int32> found {:?}", f),
-                },
-                ref f => panic!("Expecting map, got {:?}", f),
-            }
-        } else {
-            panic!("Could not parse map message");
+        let mess = parse_opt(msg, |p| p.next_message_opt());
+        assert_eq!(1, mess.fields.len());
+        match mess.fields[0].typ {
+            FieldType::Map(ref f) => match &**f {
+                &(FieldType::String, FieldType::Int32) => (),
+                ref f => panic!("Expecting Map<String, Int32> found {:?}", f),
+            },
+            ref f => panic!("Expecting map, got {:?}", f),
         }
     }
 
@@ -502,11 +1753,9 @@ mod test {
         repeated bool a5 = 5;
     }"#;
 
-        let mess = message(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(1, mess.oneofs.len());
-            assert_eq!(3, mess.oneofs[0].fields.len());
-        }
+        let mess = parse_opt(msg, |p| p.next_message_opt());
+        assert_eq!(1, mess.oneofs.len());
+        assert_eq!(3, mess.oneofs[0].fields.len());
     }
 
     #[test]
@@ -514,21 +1763,22 @@ mod test {
         let msg = r#"message Sample {
        reserved 4, 15, 17 to 20, 30;
        reserved "foo", "bar";
-       uint64 age =1;
-       bytes name =2;
+       optional uint64 age =1;
+       required bytes name =2;
     }"#;
 
-        let mess = message(msg.as_bytes());
-        if let ::nom::IResult::Done(_, mess) = mess {
-            assert_eq!(vec![4..5, 15..16, 17..21, 30..31], mess.reserved_nums);
-            assert_eq!(
-                vec!["foo".to_string(), "bar".to_string()],
-                mess.reserved_names
-            );
-            assert_eq!(2, mess.fields.len());
-        } else {
-            panic!("Could not parse reserved fields message");
-        }
+        let mess = parse_opt(msg, |p| p.next_message_opt());
+        assert_eq!(vec![
+            FieldNumberRange { from: 4, to: 4 },
+            FieldNumberRange { from: 15, to: 15 },
+            FieldNumberRange { from: 17, to: 20 },
+            FieldNumberRange { from: 30, to: 30 }],
+            mess.reserved_nums);
+        assert_eq!(
+            vec!["foo".to_string(), "bar".to_string()],
+            mess.reserved_names
+        );
+        assert_eq!(2, mess.fields.len());
     }
 
     #[test]
@@ -537,7 +1787,7 @@ mod test {
             optional int32 x = 1 [default = 17];
         }"#;
 
-        let mess = message(msg.as_bytes()).unwrap().1;
+        let mess = parse_opt(msg, |p| p.next_message_opt());
         assert_eq!("17", mess.fields[0].default.as_ref().expect("default"));
     }
 
@@ -547,7 +1797,7 @@ mod test {
             optional string x = 1 [default = "ab\nc d\"g\'h\0\"z"];
         }"#;
 
-        let mess = message(msg.as_bytes()).unwrap().1;
+        let mess = parse_opt(msg, |p| p.next_message_opt());
         assert_eq!(r#""ab\nc d\"g\'h\0\"z""#, mess.fields[0].default.as_ref().expect("default"));
     }
 
@@ -557,7 +1807,7 @@ mod test {
             optional bytes x = 1 [default = "ab\nc d\xfeE\"g\'h\0\"z"];
         }"#;
 
-        let mess = message(msg.as_bytes()).unwrap().1;
+        let mess = parse_opt(msg, |p| p.next_message_opt());
         assert_eq!(r#""ab\nc d\xfeE\"g\'h\0\"z""#, mess.fields[0].default.as_ref().expect("default"));
     }
 
@@ -573,7 +1823,7 @@ mod test {
 
             required int bbb = 3;
         }"#;
-        let mess = message(msg.as_bytes()).unwrap().1;
+        let mess = parse_opt(msg, |p| p.next_message_opt());
 
         assert_eq!("Identifier", mess.fields[1].name);
         if let FieldType::Group(ref group_fields) = mess.fields[1].typ {
@@ -593,7 +1843,8 @@ mod test {
             dfgdg
         "#;
 
-        assert!(FileDescriptor::parse(msg.as_bytes()).is_err());
+        let err = FileDescriptor::parse(msg).err().expect("err");
+        assert_eq!(4, err.line);
     }
 
     #[test]
@@ -611,7 +1862,7 @@ mod test {
             }
         "#;
 
-        let fd = FileDescriptor::parse(proto.as_bytes()).expect("fd");
+        let fd = FileDescriptor::parse(proto).expect("fd");
         assert_eq!(3, fd.extensions.len());
         assert_eq!("google.protobuf.FileOptions", fd.extensions[0].extendee);
         assert_eq!("google.protobuf.FileOptions", fd.extensions[1].extendee);
