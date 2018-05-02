@@ -3,16 +3,16 @@
 //! This crate can be seen as a rust transcription of the
 //! [descriptor.proto](https://github.com/google/protobuf/blob/master/src/google/protobuf/descriptor.proto) file
 
-#[macro_use]
-extern crate nom;
-
 mod parser;
 
-use std::ops::Range;
-use parser::file_descriptor;
+use parser::Parser;
+use parser::Loc;
+
+pub use parser::ParserError;
+pub use parser::ParserErrorWithLocation;
 
 /// Protobox syntax
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Syntax {
     /// Protobuf syntax [2](https://developers.google.com/protocol-buffers/docs/proto) (default)
     Proto2,
@@ -152,6 +152,15 @@ pub struct Field {
     pub deprecated: bool,
 }
 
+/// Extension range
+#[derive(Default, Debug, Eq, PartialEq, Copy, Clone)]
+pub struct FieldNumberRange {
+    /// First number
+    pub from: i32,
+    /// Inclusive
+    pub to: i32,
+}
+
 /// A protobuf message
 #[derive(Debug, Clone, Default)]
 pub struct Message {
@@ -164,7 +173,7 @@ pub struct Message {
     /// Message reserved numbers
     ///
     /// TODO: use RangeInclusive once stable
-    pub reserved_nums: Vec<Range<i32>>,
+    pub reserved_nums: Vec<FieldNumberRange>,
     /// Message reserved names
     pub reserved_names: Vec<String>,
     /// Nested messages
@@ -227,18 +236,14 @@ pub struct FileDescriptor {
 
 impl FileDescriptor {
     /// Parses a .proto file content into a `FileDescriptor`
-    pub fn parse<S: AsRef<[u8]>>(file: S) -> Result<Self, ::nom::IError> {
-        let file = file.as_ref();
-        match file_descriptor(file) {
-            ::nom::IResult::Done(unparsed, r) => {
-                if !unparsed.is_empty() {
-                    // TODO: make error detection part of parser and report position
-                    Err(::nom::IError::Error(::nom::ErrorKind::NoneOf))
-                } else {
-                    Ok(r)
-                }
+    pub fn parse<S: AsRef<str>>(file: S) -> Result<Self, ParserErrorWithLocation> {
+        let mut parser = Parser::new(file.as_ref());
+        match parser.next_proto() {
+            Ok(r) => Ok(r),
+            Err(error) => {
+                let Loc { line, col } = parser.loc();
+                Err(ParserErrorWithLocation { error, line, col })
             }
-            o => o.to_full_result(),
         }
     }
 }
